@@ -1,119 +1,487 @@
-"""Session-based auth. Never trusts browser-supplied user IDs."""
+"""Password login with server-side sessions.
+
+- Passwords are hashed with argon2id; plain passwords are never stored or logged.
+- The session cookie holds a random token. Only its SHA-256 hash is stored in
+  ``auth_sessions``, so logout revokes it immediately.
+- Identity always comes from the session cookie, never from a browser-supplied
+  user id.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import os
-import time
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Cookie, HTTPException, Request, Response
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
+from fastapi import Response
 
 from app.config import load_config
-from app.database import ensure_user, get_user_by_email, get_user_by_id
+from app.database import (
+    EmailAlreadyRegisteredError,
+    consume_otp_challenge,
+    create_otp_challenge,
+    create_auth_session,
+    create_password_user,
+    get_auth_session_by_token_hash,
+    get_user_by_id,
+    get_user_credentials_by_email,
+    get_user_credentials_by_id,
+    list_recent_otp_challenges,
+    record_login_success,
+    record_otp_failure,
+    record_password_failure,
+    revoke_auth_session,
+    revoke_user_auth_sessions,
+    set_user_password_hash,
+    touch_auth_session,
+)
+from app.email_sender import current_provider as current_email_provider
+from app.email_sender import send_email
 
 
 SESSION_COOKIE = "life_inbox_session"
-SESSION_TTL_SECONDS = 60 * 60 * 24 * 14
+SESSION_IDLE_TTL = timedelta(days=30)
+SESSION_ABSOLUTE_TTL = timedelta(days=90)
+SESSION_TOUCH_INTERVAL = timedelta(hours=1)
 
+PASSWORD_MIN_LENGTH = 10
+PASSWORD_MAX_LENGTH = 128
+LOCK_AFTER_FAILED_ATTEMPTS = 5
+LOCK_DURATION = timedelta(minutes=15)
 
-def _signer_key() -> bytes:
-    config = load_config(strict=False)
-    return hashlib.sha256(config.session_secret.encode("utf-8")).digest()
-
-
-def create_session_token(user_id: int) -> str:
-    payload = {
-        "uid": int(user_id),
-        "iat": int(time.time()),
-        "exp": int(time.time()) + SESSION_TTL_SECONDS,
+# Small built-in deny list; a larger breached-password list can replace it.
+COMMON_PASSWORDS = frozenset(
+    {
+        "1234567890",
+        "12345678910",
+        "0123456789",
+        "1111111111",
+        "0000000000",
+        "1q2w3e4r5t",
+        "qwertyuiop",
+        "asdfghjkl1",
+        "password12",
+        "password123",
+        "password1234",
+        "passw0rd123",
+        "iloveyou123",
+        "welcome123",
+        "letmein123",
+        "admin12345",
+        "qwerty1234",
+        "abcdefghij",
+        "abc1234567",
+        "lifeinbox1",
+        "lifeinbox123",
     }
-    body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-    sig = hmac.new(_signer_key(), body.encode("utf-8"), hashlib.sha256).hexdigest()
-    return f"{body}.{sig}"
+)
+
+_hasher = PasswordHasher()
+# Used to spend the same time on unknown emails as on real ones.
+_DUMMY_HASH = _hasher.hash(secrets.token_urlsafe(16))
 
 
-def parse_session_token(token: str) -> Optional[int]:
+class AuthError(Exception):
+    """Auth failure with an HTTP status and a user-safe message."""
+
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+INVALID_CREDENTIALS = "Incorrect email or password."
+PUBLIC_USER_FIELDS = ("id", "email", "display_name", "auth_provider", "created_at")
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(value: datetime) -> str:
+    return value.isoformat()
+
+
+def _parse(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def normalize_email(email: str) -> str:
+    cleaned = (email or "").strip().lower()
+    local, _, domain = cleaned.partition("@")
+    if (
+        not local
+        or "." not in domain
+        or domain.startswith(".")
+        or domain.endswith(".")
+        or len(cleaned) > 254
+        or any(ch.isspace() for ch in cleaned)
+    ):
+        raise AuthError(422, "Enter a valid email address.")
+    return cleaned
+
+
+def password_problem(password: str, *, email: str = "") -> Optional[str]:
+    """Return a user-facing reason the password is unacceptable, or None."""
+    if len(password) < PASSWORD_MIN_LENGTH:
+        return f"Password must be at least {PASSWORD_MIN_LENGTH} characters."
+    if len(password) > PASSWORD_MAX_LENGTH:
+        return f"Password must be at most {PASSWORD_MAX_LENGTH} characters."
+    if not password.strip():
+        return "Password cannot be only spaces."
+    lowered = password.lower()
+    if lowered in COMMON_PASSWORDS or len(set(password)) < 4:
+        return "This password is too common. Choose something harder to guess."
+    if email:
+        local = email.split("@", 1)[0]
+        if lowered == email or (len(local) >= 4 and lowered == local):
+            return "Password must not be your email address."
+    return None
+
+
+def hash_password(password: str) -> str:
+    return _hasher.hash(password)
+
+
+def _verify_password(password_hash: Optional[str], password: str) -> bool:
     try:
-        body, sig = token.rsplit(".", 1)
-    except ValueError:
-        return None
-    expected = hmac.new(
-        _signer_key(), body.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-    if not hmac.compare_digest(expected, sig):
-        return None
+        return _hasher.verify(password_hash or _DUMMY_HASH, password) and bool(
+            password_hash
+        )
+    except (VerifyMismatchError, VerificationError, InvalidHashError):
+        return False
+
+
+# --- registration / login ---------------------------------------------------
+
+
+def register_user(
+    *,
+    email: str,
+    password: str,
+    display_name: str,
+    confirm_adult: bool,
+    accept_terms: bool,
+) -> dict:
+    cleaned = normalize_email(email)
+    if not confirm_adult:
+        raise AuthError(422, "You must confirm you are 18 or older.")
+    if not accept_terms:
+        raise AuthError(422, "You must accept the Terms and Privacy Policy.")
+    problem = password_problem(password, email=cleaned)
+    if problem:
+        raise AuthError(422, problem)
     try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        return None
-    if int(payload.get("exp", 0)) < int(time.time()):
-        return None
-    return int(payload["uid"])
+        return create_password_user(
+            email=cleaned,
+            display_name=(display_name or "").strip()[:100],
+            password_hash=hash_password(password),
+            now_iso=_iso(_now()),
+        )
+    except EmailAlreadyRegisteredError as exc:
+        raise AuthError(
+            409, "An account with this email already exists. Try signing in."
+        ) from exc
 
 
-def set_session_cookie(response: Response, user_id: int) -> None:
-    secure = os.getenv("LIFE_INBOX_ENV", "local") in {"beta", "production"}
+def authenticate_password(email: str, password: str) -> dict:
+    try:
+        cleaned = normalize_email(email)
+    except AuthError:
+        raise AuthError(401, INVALID_CREDENTIALS)
+
+    creds = get_user_credentials_by_email(cleaned)
+    if creds is None or not creds["password_hash"]:
+        _verify_password(None, password)  # equalize timing
+        raise AuthError(401, INVALID_CREDENTIALS)
+
+    now = _now()
+    locked_until = _parse(creds["locked_until"])
+    if locked_until and locked_until > now:
+        _verify_password(None, password)
+        raise AuthError(
+            423,
+            "Too many failed attempts. Try again in a few minutes.",
+        )
+    if creds["status"] != "active":
+        _verify_password(None, password)
+        raise AuthError(401, INVALID_CREDENTIALS)
+
+    if not _verify_password(creds["password_hash"], password):
+        record_password_failure(
+            creds["id"],
+            lock_after=LOCK_AFTER_FAILED_ATTEMPTS,
+            locked_until_iso=_iso(now + LOCK_DURATION),
+        )
+        raise AuthError(401, INVALID_CREDENTIALS)
+
+    if _hasher.check_needs_rehash(creds["password_hash"]):
+        set_user_password_hash(creds["id"], hash_password(password), _iso(now))
+    record_login_success(creds["id"], _iso(now))
+    return get_user_by_id(creds["id"])
+
+
+def change_password(
+    user_id: int,
+    *,
+    current_password: str,
+    new_password: str,
+    keep_token: Optional[str],
+) -> int:
+    """Change the password and sign out every other session.
+
+    Returns how many other sessions were revoked.
+    """
+    creds = get_user_credentials_by_id(user_id)
+    if creds is None or not _verify_password(creds["password_hash"], current_password):
+        raise AuthError(403, "Current password is incorrect.")
+    problem = password_problem(new_password, email=creds["email"] or "")
+    if problem:
+        raise AuthError(422, problem)
+    if _verify_password(creds["password_hash"], new_password):
+        raise AuthError(422, "New password must be different from the current one.")
+    now_iso = _iso(_now())
+    set_user_password_hash(user_id, hash_password(new_password), now_iso)
+    return revoke_user_auth_sessions(
+        user_id,
+        now_iso=now_iso,
+        reason="password_changed",
+        keep_token_hash=hash_token(keep_token) if keep_token else None,
+    )
+
+
+# --- forgot password (one-time code) ----------------------------------------
+
+RESET_PURPOSE = "reset_password"
+OTP_LENGTH = 6
+OTP_TTL = timedelta(minutes=10)
+OTP_MAX_ATTEMPTS = 5
+OTP_RESEND_COOLDOWN = timedelta(seconds=60)
+OTP_MAX_PER_HOUR = 5
+INVALID_CODE = "That code is invalid or has expired. Request a new code."
+
+
+def _keyed_hash(value: str) -> str:
+    pepper = load_config(strict=False).otp_pepper.encode("utf-8")
+    return hmac.new(pepper, value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _identifier_hash(email: str) -> str:
+    return _keyed_hash(f"email:{email}")
+
+
+def _hash_code(code: str) -> str:
+    nonce = secrets.token_hex(8)
+    return f"{nonce}:{_keyed_hash(f'{nonce}:{code}')}"
+
+
+def _code_matches(code_hash: Optional[str], code: str) -> bool:
+    if not code_hash or ":" not in code_hash:
+        return False
+    nonce, expected = code_hash.split(":", 1)
+    return hmac.compare_digest(expected, _keyed_hash(f"{nonce}:{code}"))
+
+
+def request_password_reset(email: str) -> dict:
+    """Send a reset code if the email has an active account.
+
+    The result is identical whether or not the account exists, so this
+    endpoint can't be used to discover who has an account.
+    """
+    cleaned = normalize_email(email)
+    identifier = _identifier_hash(cleaned)
+    now = _now()
+    recent = list_recent_otp_challenges(
+        purpose=RESET_PURPOSE,
+        identifier_hash=identifier,
+        since_iso=_iso(now - timedelta(hours=1)),
+    )
+    if recent and now - _parse(recent[0]["created_at"]) < OTP_RESEND_COOLDOWN:
+        raise AuthError(429, "Please wait a minute before requesting another code.")
+    if len(recent) >= OTP_MAX_PER_HOUR:
+        raise AuthError(429, "Too many codes requested. Try again in an hour.")
+
+    creds = get_user_credentials_by_email(cleaned)
+    eligible = creds is not None and creds["status"] == "active"
+    code = f"{secrets.randbelow(10 ** OTP_LENGTH):0{OTP_LENGTH}d}" if eligible else None
+    create_otp_challenge(
+        purpose=RESET_PURPOSE,
+        identifier_hash=identifier,
+        user_id=creds["id"] if eligible else None,
+        code_hash=_hash_code(code) if code else None,
+        now_iso=_iso(now),
+        expires_iso=_iso(now + OTP_TTL),
+        max_attempts=OTP_MAX_ATTEMPTS,
+    )
+    if code:
+        minutes = int(OTP_TTL.total_seconds() // 60)
+        send_email(
+            cleaned,
+            "Your Life Inbox password reset code",
+            f"Your Life Inbox code is {code}.\n\n"
+            f"It expires in {minutes} minutes and can be used once.\n"
+            "If you didn't ask to reset your password, ignore this email; "
+            "your password has not changed.",
+        )
+    return {
+        "resend_after_seconds": int(OTP_RESEND_COOLDOWN.total_seconds()),
+        "delivery": current_email_provider(),
+    }
+
+
+def reset_password_with_code(email: str, code: str, new_password: str) -> dict:
+    """Check the code, set the new password and sign out every session."""
+    try:
+        cleaned = normalize_email(email)
+    except AuthError:
+        raise AuthError(400, INVALID_CODE)
+    problem = password_problem(new_password, email=cleaned)
+    if problem:
+        raise AuthError(422, problem)
+
+    now = _now()
+    recent = list_recent_otp_challenges(
+        purpose=RESET_PURPOSE,
+        identifier_hash=_identifier_hash(cleaned),
+        since_iso=_iso(now - OTP_TTL),
+    )
+    # Only the newest code counts; requesting a new code retires older ones.
+    challenge = recent[0] if recent else None
+    if (
+        challenge is None
+        or challenge["consumed_at"] is not None
+        or _parse(challenge["expires_at"]) <= now
+    ):
+        raise AuthError(400, INVALID_CODE)
+    if challenge["attempts"] >= challenge["max_attempts"]:
+        raise AuthError(400, "Too many wrong codes. Request a new code.")
+
+    entered = "".join(ch for ch in (code or "") if not ch.isspace())
+    if challenge["user_id"] is None or not _code_matches(
+        challenge["code_hash"], entered
+    ):
+        record_otp_failure(challenge["id"])
+        left = challenge["max_attempts"] - challenge["attempts"] - 1
+        if left <= 0:
+            raise AuthError(400, "Too many wrong codes. Request a new code.")
+        raise AuthError(
+            400, f"That code is not correct. {left} attempt(s) left."
+        )
+
+    if not consume_otp_challenge(challenge["id"], _iso(now)):
+        raise AuthError(400, INVALID_CODE)
+    creds = get_user_credentials_by_id(challenge["user_id"])
+    if creds is None or creds["status"] != "active":
+        raise AuthError(400, INVALID_CODE)
+
+    now_iso = _iso(now)
+    set_user_password_hash(creds["id"], hash_password(new_password), now_iso)
+    revoke_user_auth_sessions(
+        creds["id"], now_iso=now_iso, reason="password_reset"
+    )
+    send_email(
+        cleaned,
+        "Your Life Inbox password was changed",
+        "Your Life Inbox password was just reset using a code sent to this "
+        "email, and all devices were signed out.\n\n"
+        "If this wasn't you, reset your password again right away.",
+    )
+    return {key: creds[key] for key in PUBLIC_USER_FIELDS}
+
+
+# --- sessions ---------------------------------------------------------------
+
+
+def start_session(
+    user_id: int, *, auth_method: str, user_agent: Optional[str] = None
+) -> str:
+    """Create a new session and return the raw token for the cookie."""
+    token = secrets.token_urlsafe(32)
+    now = _now()
+    create_auth_session(
+        user_id=user_id,
+        token_hash=hash_token(token),
+        auth_method=auth_method,
+        now_iso=_iso(now),
+        idle_expires_iso=_iso(now + SESSION_IDLE_TTL),
+        absolute_expires_iso=_iso(now + SESSION_ABSOLUTE_TTL),
+        device_label=(user_agent or "")[:200] or None,
+    )
+    return token
+
+
+def resolve_session(token: Optional[str]) -> Optional[dict]:
+    """Return the signed-in user for a session token, or None."""
+    if not token or len(token) > 200:
+        return None
+    record = get_auth_session_by_token_hash(hash_token(token))
+    if record is None or record["revoked_at"] is not None:
+        return None
+    now = _now()
+    if _parse(record["absolute_expires_at"]) <= now:
+        return None
+    if _parse(record["idle_expires_at"]) <= now:
+        return None
+    creds = get_user_credentials_by_id(record["user_id"])
+    if creds is None or creds["status"] != "active":
+        return None
+    user = {key: creds[key] for key in PUBLIC_USER_FIELDS}
+    last_seen = _parse(record["last_seen_at"])
+    if last_seen is None or now - last_seen >= SESSION_TOUCH_INTERVAL:
+        touch_auth_session(
+            record["id"],
+            now_iso=_iso(now),
+            idle_expires_iso=_iso(now + SESSION_IDLE_TTL),
+        )
+    return user
+
+
+def end_session(token: Optional[str]) -> None:
+    if token:
+        revoke_auth_session(hash_token(token), now_iso=_iso(_now()), reason="logout")
+
+
+def end_all_sessions(user_id: int) -> int:
+    return revoke_user_auth_sessions(
+        user_id, now_iso=_iso(_now()), reason="logout_all"
+    )
+
+
+def _secure_cookies() -> bool:
+    return os.getenv("LIFE_INBOX_ENV", "local") in {"beta", "production"}
+
+
+def set_session_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key=SESSION_COOKIE,
-        value=create_session_token(user_id),
+        value=token,
         httponly=True,
         samesite="lax",
-        secure=secure,
-        max_age=SESSION_TTL_SECONDS,
+        secure=_secure_cookies(),
+        max_age=int(SESSION_ABSOLUTE_TTL.total_seconds()),
         path="/",
     )
 
 
 def clear_session_cookie(response: Response) -> None:
-    response.delete_cookie(SESSION_COOKIE, path="/")
-
-
-def get_current_user(
-    request: Request,
-    life_inbox_session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE),
-) -> dict:
-    # Never accept X-User-Id / query user_id as identity.
-    if "x-user-id" in {k.lower() for k in request.headers.keys()}:
-        # Ignore spoof header completely.
-        pass
-
-    token = life_inbox_session
-    if not token:
-        raise HTTPException(status_code=401, detail="Authentication required.")
-    user_id = parse_session_token(token)
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired session.")
-    user = get_user_by_id(user_id)
-    if user is None:
-        raise HTTPException(status_code=401, detail="Unknown session user.")
-    return user
-
-
-def optional_current_user(
-    request: Request,
-    life_inbox_session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE),
-) -> Optional[dict]:
-    try:
-        return get_current_user(request, life_inbox_session)
-    except HTTPException:
-        return None
-
-
-def dev_login_user(email: str, display_name: Optional[str] = None) -> dict:
-    config = load_config(strict=False)
-    if not config.allow_dev_login:
-        raise HTTPException(status_code=403, detail="Dev login is disabled.")
-    cleaned = email.strip().lower()
-    if "@" not in cleaned or len(cleaned) < 5:
-        raise HTTPException(status_code=400, detail="Valid email required.")
-    existing = get_user_by_email(cleaned)
-    if existing:
-        return existing
-    return ensure_user(
-        email=cleaned,
-        display_name=display_name or cleaned.split("@", 1)[0],
-        auth_provider="dev",
+    response.delete_cookie(
+        SESSION_COOKIE,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=_secure_cookies(),
     )

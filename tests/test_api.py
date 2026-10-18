@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.auth_helpers import login, register
+
 
 def analysis_without_metadata(data):
     return {
@@ -43,6 +45,7 @@ def client(tmp_path, monkeypatch):
 
     assert database.engine.url.database == str(test_db_path)
     with TestClient(main.app) as test_client:
+        register(test_client, "owner@example.com", display_name="Owner")
         yield test_client
 
     database.engine.dispose()
@@ -1807,10 +1810,7 @@ def test_voice_transcription_owner_isolation(client, monkeypatch):
         monkeypatch,
         "Alice private voice memo about yacht taxes",
     )
-    alice = client.post(
-        "/api/auth/dev-login",
-        json={"email": "alice-voice@example.com"},
-    ).json()
+    alice = register(client, "alice-voice@example.com")
     alice_item = client.post(
         "/api/items/voice",
         files={"file": ("alice.wav", make_wav_bytes(), "audio/wav")},
@@ -1818,10 +1818,7 @@ def test_voice_transcription_owner_isolation(client, monkeypatch):
     assert alice_item["owner_user_id"] == alice["id"]
     assert "yacht" in alice_item["extracted_text"].lower()
 
-    bob = client.post(
-        "/api/auth/dev-login",
-        json={"email": "bob-voice@example.com"},
-    ).json()
+    bob = register(client, "bob-voice@example.com")
     assert bob["id"] != alice["id"]
     missing = client.get(f"/api/items/{alice_item['id']}")
     assert missing.status_code == 404
@@ -1986,10 +1983,7 @@ def test_parse_timing_preserves_original_phrase():
 
 
 def test_user_isolation_prevents_cross_account_access(client):
-    alice = client.post(
-        "/api/auth/dev-login",
-        json={"email": "alice@example.com", "display_name": "Alice"},
-    ).json()
+    alice = register(client, "alice@example.com", display_name="Alice")
     assert alice["email"] == "alice@example.com"
     alice_item = client.post(
         "/api/items",
@@ -1997,10 +1991,7 @@ def test_user_isolation_prevents_cross_account_access(client):
     ).json()
     assert alice_item["owner_user_id"] == alice["id"]
 
-    bob = client.post(
-        "/api/auth/dev-login",
-        json={"email": "bob@example.com", "display_name": "Bob"},
-    ).json()
+    bob = register(client, "bob@example.com", display_name="Bob")
     assert bob["id"] != alice["id"]
     bob_items = client.get("/api/items").json()
     assert all(item["owner_user_id"] == bob["id"] for item in bob_items)
@@ -2013,20 +2004,14 @@ def test_user_isolation_prevents_cross_account_access(client):
     assert deleted.status_code == 404
 
     # Switch back to Alice and confirm her item remains.
-    client.post(
-        "/api/auth/dev-login",
-        json={"email": "alice@example.com"},
-    )
+    login(client, "alice@example.com")
     still_there = client.get(f"/api/items/{alice_item['id']}")
     assert still_there.status_code == 200
     assert still_there.json()["raw_text"].startswith("Alice private")
 
 
 def test_browser_supplied_user_id_header_is_ignored(client):
-    alice = client.post(
-        "/api/auth/dev-login",
-        json={"email": "alice2@example.com"},
-    ).json()
+    alice = register(client, "alice2@example.com")
     client.post("/api/items", json={"raw_text": "Owned by Alice session"})
     # Spoof header must not switch identity.
     items = client.get("/api/items", headers={"X-User-Id": "999999"}).json()
@@ -2034,10 +2019,11 @@ def test_browser_supplied_user_id_header_is_ignored(client):
     assert all(item["owner_user_id"] == alice["id"] for item in items)
 
 
-def test_google_oauth_start_is_stubbed(client):
-    response = client.get("/api/auth/google/start")
-    assert response.status_code == 501
-    assert "oauth" in response.json()["detail"].lower()
+def test_dev_login_and_google_stub_are_removed(client):
+    assert client.post(
+        "/api/auth/dev-login", json={"email": "x@example.com"}
+    ).status_code in {404, 405}
+    assert client.get("/api/auth/google/start").status_code == 404
 
 
 def test_health_includes_config_metadata(client):

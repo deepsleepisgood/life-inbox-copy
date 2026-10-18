@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.auth_helpers import login, register
+
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
@@ -27,6 +29,7 @@ def client(tmp_path, monkeypatch):
     database = importlib.import_module("app.database")
 
     with TestClient(main.app) as test_client:
+        register(test_client, "owner@example.com", display_name="Owner")
         yield test_client
 
     database.engine.dispose()
@@ -241,12 +244,7 @@ def test_ask_llm_insufficient_when_model_says_so(client, monkeypatch):
 
 
 def test_ask_user_isolation_prevents_cross_account_citations(client, monkeypatch):
-    alice_login = client.post(
-        "/api/auth/dev-login",
-        json={"email": "alice-ask@example.com", "display_name": "Alice"},
-    )
-    assert alice_login.status_code == 200
-    alice = alice_login.json()
+    alice = register(client, "alice-ask@example.com", display_name="Alice")
 
     alice_create = client.post(
         "/api/items",
@@ -260,12 +258,7 @@ def test_ask_user_isolation_prevents_cross_account_citations(client, monkeypatch
     alice_item = alice_create.json()
     assert alice_item["owner_user_id"] == alice["id"]
 
-    bob_login = client.post(
-        "/api/auth/dev-login",
-        json={"email": "bob-ask@example.com", "display_name": "Bob"},
-    )
-    assert bob_login.status_code == 200
-    bob = bob_login.json()
+    bob = register(client, "bob-ask@example.com", display_name="Bob")
     assert bob["id"] != alice["id"]
 
     bob_create = client.post(

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in · Life Inbox</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <h1>Life Inbox</h1>
+    <p class="sub">Capture first. Organize later.</p>
+
+    <div class="auth-tabs" role="tablist">
+      <button type="button" role="tab" id="tabSignIn" aria-controls="signInForm" aria-selected="true" class="auth-tab active">Sign in</button>
+      <button type="button" role="tab" id="tabRegister" aria-controls="registerForm" aria-selected="false" class="auth-tab">Create account</button>
+    </div>
+
+    <form id="signInForm" class="auth-stack" role="tabpanel" aria-labelledby="tabSignIn" novalidate>
+      <label>
+        Email
+        <input id="signInEmail" type="email" autocomplete="username" maxlength="254" required />
+      </label>
+      <label>
+        Password
+        <span class="password-field">
+          <input id="signInPassword" type="password" autocomplete="current-password" maxlength="128" required />
+          <button type="button" class="link-button toggle-password" data-target="signInPassword" aria-label="Show password">Show</button>
+        </span>
+      </label>
+      <button type="submit" id="signInButton">Sign in</button>
+      <button type="button" class="link-button" id="forgotPasswordButton">Forgot password?</button>
+    </form>
+
+    <section id="forgotPanel" class="auth-stack" hidden aria-labelledby="forgotTitle">
+      <h2 id="forgotTitle" class="auth-subtitle">Reset your password</h2>
+
+      <form id="forgotRequestForm" class="auth-stack" novalidate>
+        <p class="muted small">Enter your account email. We'll send a 6-digit code that works for 10 minutes.</p>
+        <label>
+          Email
+          <input id="forgotEmail" type="email" autocomplete="username" maxlength="254" required />
+        </label>
+        <button type="submit" id="forgotSendButton">Send code</button>
+      </form>
+
+      <form id="forgotResetForm" class="auth-stack" hidden novalidate>
+        <p id="forgotSentInfo" class="muted small"></p>
+        <label>
+          6-digit code
+          <input id="forgotCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required />
+        </label>
+        <label>
+          New password
+          <span class="password-field">
+            <input id="forgotNewPassword" type="password" autocomplete="new-password" minlength="10" maxlength="128" required />
+            <button type="button" class="link-button toggle-password" data-target="forgotNewPassword" aria-label="Show password">Show</button>
+          </span>
+          <span class="muted small">At least 10 characters.</span>
+        </label>
+        <label>
+          Confirm new password
+          <input id="forgotNewPasswordConfirm" type="password" autocomplete="new-password" maxlength="128" required />
+        </label>
+        <button type="submit" id="forgotResetButton">Reset password</button>
+        <button type="button" class="link-button" id="forgotResendButton" disabled>Resend code</button>
+      </form>
+
+      <button type="button" class="link-button" id="forgotBackButton">Back to sign in</button>
+    </section>
+
+    <form id="registerForm" class="auth-stack" role="tabpanel" aria-labelledby="tabRegister" hidden novalidate>
+      <label>
+        Name
+        <input id="registerName" type="text" autocomplete="name" maxlength="100" />
+      </label>
+      <label>
+        Email
+        <input id="registerEmail" type="email" autocomplete="email" maxlength="254" required />
+      </label>
+      <label>
+        Password
+        <span class="password-field">
+          <input id="registerPassword" type="password" autocomplete="new-password" minlength="10" maxlength="128" required aria-describedby="passwordHint" />
+          <button type="button" class="link-button toggle-password" data-target="registerPassword" aria-label="Show password">Show</button>
+        </span>
+        <span id="passwordHint" class="muted small">At least 10 characters. A short sentence works well.</span>
+      </label>
+      <label>
+        Confirm password
+        <input id="registerPasswordConfirm" type="password" autocomplete="new-password" maxlength="128" required />
+      </label>
+      <label class="check">
+        <input id="registerAdult" type="checkbox" required />
+        I am 18 years or older.
+      </label>
+      <label class="check">
+        <input id="registerTerms" type="checkbox" required />
+        <span>I agree to the <a href="/terms" target="_blank" rel="noopener">Terms</a> and have read the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span>
+      </label>
+      <button type="submit" id="registerButton">Create account</button>
+    </form>
+
+    <p id="authMessage" class="status" role="alert" aria-live="assertive"></p>
+  </main>
+  <script src="/static/auth.js"></script>
+</body>
+</html>

@@ -126,12 +126,48 @@ def test_upgrade_creates_inbox_items_in_empty_database(tmp_path, monkeypatch):
             column["name"]
             for column in inspector.get_columns("task_source_items")
         } == {"task_id", "item_id"}
+        assert {
+            "password_hash",
+            "password_changed_at",
+            "status",
+            "failed_password_attempts",
+            "locked_until",
+            "last_login_at",
+            "email_verified_at",
+            "adult_confirmed_at",
+            "terms_accepted_at",
+        } <= {column["name"] for column in inspector.get_columns("users")}
+        assert {
+            "id",
+            "user_id",
+            "token_hash",
+            "auth_method",
+            "created_at",
+            "last_seen_at",
+            "idle_expires_at",
+            "absolute_expires_at",
+            "revoked_at",
+            "revoked_reason",
+            "device_label",
+        } == {column["name"] for column in inspector.get_columns("auth_sessions")}
+        assert {
+            "id",
+            "purpose",
+            "identifier_hash",
+            "user_id",
+            "code_hash",
+            "attempts",
+            "max_attempts",
+            "created_at",
+            "expires_at",
+            "consumed_at",
+        } == {column["name"] for column in inspector.get_columns("otp_challenges")}
         with engine.connect() as connection:
             revision = connection.scalar(
                 text("SELECT version_num FROM alembic_version")
             )
             topic_count = connection.scalar(text("SELECT COUNT(*) FROM topics"))
-        assert revision == "0011_multi_user_ownership"
+        assert revision == "0013_otp_challenges"
         assert topic_count >= 9
     finally:
         engine.dispose()
@@ -232,7 +268,7 @@ def test_upgrade_adopts_legacy_database_without_changing_notes(
             for note_id, note_text, created_at in existing_notes
         ]
         assert next_id == 10
-        assert revision == "0011_multi_user_ownership"
+        assert revision == "0013_otp_challenges"
     finally:
         engine.dispose()
 
@@ -318,7 +354,7 @@ def test_upgrade_consolidates_tasks_that_share_a_source(tmp_path, monkeypatch):
             )
         ]
         assert [tuple(link) for link in links] == [(1, 1)]
-        assert revision == "0011_multi_user_ownership"
+        assert revision == "0013_otp_challenges"
 
         # Milestone 2 drops the one-task-per-source unique index so one
         # inbox item may source multiple durable tasks.
@@ -357,3 +393,128 @@ def test_upgrade_consolidates_tasks_that_share_a_source(tmp_path, monkeypatch):
         assert [tuple(link) for link in multi_links] == [(1, 1), (2, 1)]
     finally:
         engine.dispose()
+
+
+def test_upgrade_to_password_auth_scopes_topic_names_per_owner(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    database_path = tmp_path / "topics_per_owner.db"
+    config = alembic_config(database_path)
+    command.upgrade(config, "0011_multi_user_ownership")
+
+    engine = create_engine(f"sqlite:///{database_path}")
+    try:
+        with engine.begin() as connection:
+            work_id = connection.scalar(
+                text("SELECT id FROM topics WHERE name = 'Work'")
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO inbox_items (
+                        id, item_type, raw_text, processing_status,
+                        created_at, owner_user_id
+                    )
+                    VALUES (1, 'text', 'Quarterly review', 'ready',
+                            '2026-01-01', 1)
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO analysis_runs (
+                        id, started_at, status, mode, owner_user_id
+                    )
+                    VALUES (1, '2026-01-01', 'succeeded', 'fallback', 1)
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO item_insights (
+                        item_id, analysis_run_id, category, concise_title,
+                        priority, updated_at, topic_id
+                    )
+                    VALUES (1, 1, 'Work', 'Review', 'High', '2026-01-01',
+                            :topic_id)
+                    """
+                ),
+                {"topic_id": work_id},
+            )
+
+        command.upgrade(config, "head")
+
+        with engine.begin() as connection:
+            assert connection.scalar(
+                text("SELECT topic_id FROM item_insights WHERE item_id = 1")
+            ) == work_id
+            assert connection.scalar(
+                text("SELECT name FROM topics WHERE id = :id"), {"id": work_id}
+            ) == "Work"
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO users (email, display_name, auth_provider,
+                                       created_at)
+                    VALUES ('second@example.com', 'Second', 'password',
+                            '2026-01-02')
+                    """
+                )
+            )
+            second_id = connection.scalar(
+                text("SELECT id FROM users WHERE email = 'second@example.com'")
+            )
+            # Same topic name for a different owner is now allowed.
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO topics (name, owner_user_id, created_at,
+                                        updated_at, archived)
+                    VALUES ('Work', :owner, '2026-01-02', '2026-01-02', 0)
+                    """
+                ),
+                {"owner": second_id},
+            )
+        with pytest.raises(Exception):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO topics (name, owner_user_id, created_at,
+                                            updated_at, archived)
+                        VALUES ('Work', 1, '2026-01-03', '2026-01-03', 0)
+                        """
+                    )
+                )
+    finally:
+        engine.dispose()
+
+
+def test_app_refuses_to_start_on_out_of_date_schema(tmp_path, monkeypatch):
+    import importlib
+    import sys
+
+    database_path = tmp_path / "behind.db"
+    config = alembic_config(database_path)
+    command.upgrade(config, "0011_multi_user_ownership")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
+    monkeypatch.delenv("LIFE_INBOX_AUTO_CREATE_TABLES", raising=False)
+    modules = ("app.main", "app.database", "app.auth", "app.config")
+    for name in modules:
+        sys.modules.pop(name, None)
+    try:
+        with pytest.raises(RuntimeError, match="alembic upgrade head"):
+            importlib.import_module("app.main")
+
+        for name in modules:
+            sys.modules.pop(name, None)
+        command.upgrade(config, "head")
+        main = importlib.import_module("app.main")
+        assert main.app is not None
+        sys.modules["app.database"].engine.dispose()
+    finally:
+        for name in modules:
+            sys.modules.pop(name, None)

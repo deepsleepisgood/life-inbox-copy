@@ -11,15 +11,31 @@
     <h1>Life Inbox</h1>
     <p class="sub">Capture first. Organize the whole inbox with AI when you are ready.</p>
     <div class="auth-bar">
-      <span id="authUser" class="muted">Checking session…</span>
-      <form id="devLoginForm" class="auth-form" onsubmit="devLogin(event)">
-        <label>
-          Dev login email
-          <input id="devLoginEmail" type="email" maxlength="200" placeholder="you@example.com" required />
-        </label>
-        <button type="submit" class="secondary">Sign in</button>
-        <button type="button" class="secondary" onclick="logoutSession()">Sign out</button>
-      </form>
+      <div class="auth-row">
+        <span id="authUser" class="muted">Checking session…</span>
+        <span class="auth-actions">
+          <button type="button" class="secondary" onclick="logoutSession()">Sign out</button>
+          <button type="button" class="secondary" onclick="logoutAllSessions()">Sign out everywhere</button>
+        </span>
+      </div>
+      <details class="account-settings">
+        <summary>Change password</summary>
+        <form id="changePasswordForm" class="auth-form" onsubmit="changePassword(event)">
+          <label>
+            Current password
+            <input id="currentPassword" type="password" autocomplete="current-password" maxlength="128" required />
+          </label>
+          <label>
+            New password (10+ characters)
+            <input id="newPassword" type="password" autocomplete="new-password" minlength="10" maxlength="128" required />
+          </label>
+          <label>
+            Confirm new password
+            <input id="newPasswordConfirm" type="password" autocomplete="new-password" maxlength="128" required />
+          </label>
+          <button type="submit" class="secondary" id="changePasswordButton">Update password</button>
+        </form>
+      </details>
       <p id="authStatus" class="status muted" role="status" aria-live="polite"></p>
     </div>
 

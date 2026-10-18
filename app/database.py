@@ -11,6 +11,10 @@ _current_owner_id: ContextVar[Optional[int]] = ContextVar(
     "life_inbox_owner_id", default=None
 )
 
+
+class NotAuthenticatedError(RuntimeError):
+    """Raised when owner-scoped data is touched without a signed-in user."""
+
 from sqlalchemy import (
     CheckConstraint,
     Column,
@@ -95,6 +99,60 @@ class UserRecord(Base):
     display_name = Column(Text, nullable=False)
     auth_provider = Column(Text, nullable=False)
     created_at = Column(Text, nullable=False)
+    password_hash = Column(Text, nullable=True)
+    password_changed_at = Column(Text, nullable=True)
+    status = Column(Text, nullable=False, default="active", server_default="active")
+    failed_password_attempts = Column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    locked_until = Column(Text, nullable=True)
+    last_login_at = Column(Text, nullable=True)
+    email_verified_at = Column(Text, nullable=True)
+    adult_confirmed_at = Column(Text, nullable=True)
+    terms_accepted_at = Column(Text, nullable=True)
+
+
+class AuthSessionRecord(Base):
+    __tablename__ = "auth_sessions"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_auth_sessions_token_hash"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    token_hash = Column(Text, nullable=False)
+    auth_method = Column(Text, nullable=False)
+    created_at = Column(Text, nullable=False)
+    last_seen_at = Column(Text, nullable=False)
+    idle_expires_at = Column(Text, nullable=False)
+    absolute_expires_at = Column(Text, nullable=False)
+    revoked_at = Column(Text, nullable=True)
+    revoked_reason = Column(Text, nullable=True)
+    device_label = Column(Text, nullable=True)
+
+
+class OtpChallengeRecord(Base):
+    __tablename__ = "otp_challenges"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    purpose = Column(Text, nullable=False)
+    identifier_hash = Column(Text, nullable=False, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    code_hash = Column(Text, nullable=True)
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    max_attempts = Column(Integer, nullable=False, default=5, server_default="5")
+    created_at = Column(Text, nullable=False)
+    expires_at = Column(Text, nullable=False)
+    consumed_at = Column(Text, nullable=True)
 
 
 class InboxItemRecord(Base):
@@ -335,20 +393,289 @@ def ensure_user(
         return _user_to_dict(user)
 
 
-def get_or_create_default_owner_id() -> int:
-    user = ensure_user(
-        email=DEFAULT_OWNER_EMAIL,
-        display_name="Local Owner",
-        auth_provider="local",
-    )
-    return user["id"]
+class EmailAlreadyRegisteredError(ValueError):
+    pass
+
+
+def _credentials_to_dict(user: UserRecord) -> dict:
+    return {
+        **_user_to_dict(user),
+        "password_hash": user.password_hash,
+        "status": user.status,
+        "failed_password_attempts": user.failed_password_attempts or 0,
+        "locked_until": user.locked_until,
+    }
+
+
+def get_user_credentials_by_email(email: str) -> Optional[dict]:
+    """Includes the password hash. Never return this dict to a client."""
+    with SessionLocal() as session:
+        user = session.scalar(
+            select(UserRecord).where(UserRecord.email == email.strip().lower())
+        )
+        return _credentials_to_dict(user) if user else None
+
+
+def get_user_credentials_by_id(user_id: int) -> Optional[dict]:
+    """Includes the password hash. Never return this dict to a client."""
+    with SessionLocal() as session:
+        user = session.get(UserRecord, user_id)
+        return _credentials_to_dict(user) if user else None
+
+
+def create_password_user(
+    *,
+    email: str,
+    display_name: str,
+    password_hash: str,
+    now_iso: str,
+) -> dict:
+    cleaned = email.strip().lower()
+    with SessionLocal() as session:
+        existing = session.scalar(
+            select(UserRecord.id).where(UserRecord.email == cleaned)
+        )
+        if existing is not None:
+            raise EmailAlreadyRegisteredError(cleaned)
+        user = UserRecord(
+            email=cleaned,
+            display_name=display_name.strip() or cleaned.split("@", 1)[0],
+            auth_provider="password",
+            created_at=now_iso,
+            password_hash=password_hash,
+            password_changed_at=now_iso,
+            status="active",
+            failed_password_attempts=0,
+            adult_confirmed_at=now_iso,
+            terms_accepted_at=now_iso,
+        )
+        session.add(user)
+        session.flush()
+        ensure_default_topics(session, owner_user_id=user.id)
+        session.commit()
+        return _user_to_dict(user)
+
+
+def record_password_failure(
+    user_id: int, *, lock_after: int, locked_until_iso: str
+) -> None:
+    with SessionLocal() as session:
+        user = session.get(UserRecord, user_id)
+        if user is None:
+            return
+        user.failed_password_attempts = (user.failed_password_attempts or 0) + 1
+        if user.failed_password_attempts >= lock_after:
+            user.locked_until = locked_until_iso
+            user.failed_password_attempts = 0
+        session.commit()
+
+
+def record_login_success(user_id: int, now_iso: str) -> None:
+    with SessionLocal() as session:
+        user = session.get(UserRecord, user_id)
+        if user is None:
+            return
+        user.failed_password_attempts = 0
+        user.locked_until = None
+        user.last_login_at = now_iso
+        session.commit()
+
+
+def set_user_password_hash(user_id: int, password_hash: str, now_iso: str) -> None:
+    with SessionLocal() as session:
+        user = session.get(UserRecord, user_id)
+        if user is None:
+            return
+        user.password_hash = password_hash
+        user.password_changed_at = now_iso
+        user.failed_password_attempts = 0
+        user.locked_until = None
+        session.commit()
+
+
+def _auth_session_to_dict(record: AuthSessionRecord) -> dict:
+    return {
+        "id": record.id,
+        "user_id": record.user_id,
+        "auth_method": record.auth_method,
+        "created_at": record.created_at,
+        "last_seen_at": record.last_seen_at,
+        "idle_expires_at": record.idle_expires_at,
+        "absolute_expires_at": record.absolute_expires_at,
+        "revoked_at": record.revoked_at,
+        "device_label": record.device_label,
+    }
+
+
+def create_auth_session(
+    *,
+    user_id: int,
+    token_hash: str,
+    auth_method: str,
+    now_iso: str,
+    idle_expires_iso: str,
+    absolute_expires_iso: str,
+    device_label: Optional[str] = None,
+) -> dict:
+    with SessionLocal() as session:
+        record = AuthSessionRecord(
+            user_id=user_id,
+            token_hash=token_hash,
+            auth_method=auth_method,
+            created_at=now_iso,
+            last_seen_at=now_iso,
+            idle_expires_at=idle_expires_iso,
+            absolute_expires_at=absolute_expires_iso,
+            device_label=device_label,
+        )
+        session.add(record)
+        session.commit()
+        return _auth_session_to_dict(record)
+
+
+def get_auth_session_by_token_hash(token_hash: str) -> Optional[dict]:
+    with SessionLocal() as session:
+        record = session.scalar(
+            select(AuthSessionRecord).where(
+                AuthSessionRecord.token_hash == token_hash
+            )
+        )
+        return _auth_session_to_dict(record) if record else None
+
+
+def touch_auth_session(
+    session_id: int, *, now_iso: str, idle_expires_iso: str
+) -> None:
+    with SessionLocal() as session:
+        record = session.get(AuthSessionRecord, session_id)
+        if record is None or record.revoked_at is not None:
+            return
+        record.last_seen_at = now_iso
+        record.idle_expires_at = idle_expires_iso
+        session.commit()
+
+
+def revoke_auth_session(token_hash: str, *, now_iso: str, reason: str) -> bool:
+    with SessionLocal() as session:
+        record = session.scalar(
+            select(AuthSessionRecord).where(
+                AuthSessionRecord.token_hash == token_hash
+            )
+        )
+        if record is None or record.revoked_at is not None:
+            return False
+        record.revoked_at = now_iso
+        record.revoked_reason = reason
+        session.commit()
+        return True
+
+
+def revoke_user_auth_sessions(
+    user_id: int,
+    *,
+    now_iso: str,
+    reason: str,
+    keep_token_hash: Optional[str] = None,
+) -> int:
+    with SessionLocal() as session:
+        statement = select(AuthSessionRecord).where(
+            AuthSessionRecord.user_id == user_id,
+            AuthSessionRecord.revoked_at.is_(None),
+        )
+        if keep_token_hash is not None:
+            statement = statement.where(
+                AuthSessionRecord.token_hash != keep_token_hash
+            )
+        records = session.scalars(statement).all()
+        for record in records:
+            record.revoked_at = now_iso
+            record.revoked_reason = reason
+        session.commit()
+        return len(records)
+
+
+def _otp_to_dict(record: OtpChallengeRecord) -> dict:
+    return {
+        "id": record.id,
+        "purpose": record.purpose,
+        "user_id": record.user_id,
+        "code_hash": record.code_hash,
+        "attempts": record.attempts,
+        "max_attempts": record.max_attempts,
+        "created_at": record.created_at,
+        "expires_at": record.expires_at,
+        "consumed_at": record.consumed_at,
+    }
+
+
+def create_otp_challenge(
+    *,
+    purpose: str,
+    identifier_hash: str,
+    user_id: Optional[int],
+    code_hash: Optional[str],
+    now_iso: str,
+    expires_iso: str,
+    max_attempts: int,
+) -> dict:
+    with SessionLocal() as session:
+        record = OtpChallengeRecord(
+            purpose=purpose,
+            identifier_hash=identifier_hash,
+            user_id=user_id,
+            code_hash=code_hash,
+            attempts=0,
+            max_attempts=max_attempts,
+            created_at=now_iso,
+            expires_at=expires_iso,
+        )
+        session.add(record)
+        session.commit()
+        return _otp_to_dict(record)
+
+
+def list_recent_otp_challenges(
+    *, purpose: str, identifier_hash: str, since_iso: str
+) -> list[dict]:
+    """Newest first."""
+    with SessionLocal() as session:
+        records = session.scalars(
+            select(OtpChallengeRecord)
+            .where(
+                OtpChallengeRecord.purpose == purpose,
+                OtpChallengeRecord.identifier_hash == identifier_hash,
+                OtpChallengeRecord.created_at >= since_iso,
+            )
+            .order_by(OtpChallengeRecord.id.desc())
+        ).all()
+        return [_otp_to_dict(record) for record in records]
+
+
+def record_otp_failure(challenge_id: int) -> None:
+    with SessionLocal() as session:
+        record = session.get(OtpChallengeRecord, challenge_id)
+        if record is not None:
+            record.attempts = (record.attempts or 0) + 1
+            session.commit()
+
+
+def consume_otp_challenge(challenge_id: int, now_iso: str) -> bool:
+    """Mark a code as used. Returns False if it was already used."""
+    with SessionLocal() as session:
+        record = session.get(OtpChallengeRecord, challenge_id)
+        if record is None or record.consumed_at is not None:
+            return False
+        record.consumed_at = now_iso
+        session.commit()
+        return True
 
 
 def require_owner_id() -> int:
+    """Owner of the current request. Never falls back to a shared user."""
     owner = get_current_owner_id()
-    if owner is not None:
-        return owner
-    return get_or_create_default_owner_id()
+    if owner is None:
+        raise NotAuthenticatedError("Authentication required.")
+    return owner
 
 
 def ensure_default_topics(session, owner_user_id: Optional[int] = None) -> None:
@@ -374,12 +701,43 @@ def ensure_default_topics(session, owner_user_id: Optional[int] = None) -> None:
     session.flush()
 
 
+class SchemaOutOfDateError(RuntimeError):
+    pass
+
+
+def ensure_schema_is_current() -> None:
+    """Refuse to start against a database Alembic hasn't upgraded to head.
+
+    Otherwise new code runs against old tables and fails on every request
+    (e.g. sign-in errors with 500 because ``users.password_hash`` is missing).
+    """
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+
+    project_root = Path(__file__).resolve().parent.parent
+    config = Config(str(project_root / "alembic.ini"))
+    config.set_main_option("script_location", str(project_root / "migrations"))
+    expected = set(ScriptDirectory.from_config(config).get_heads())
+    with engine.connect() as connection:
+        current = set(MigrationContext.configure(connection).get_current_heads())
+    if current != expected:
+        found = ", ".join(sorted(current)) or "none (empty database)"
+        raise SchemaOutOfDateError(
+            f"Database schema is out of date (found {found}; app needs "
+            f"{', '.join(sorted(expected))}). Back up the database, then run: "
+            "python -m alembic upgrade head"
+        )
+
+
 def init_db():
     """Prepare the DB connection.
 
     Alembic owns schema evolution. Table auto-creation is opt-in for isolated
     automated tests via LIFE_INBOX_AUTO_CREATE_TABLES=1.
     """
+    if not AUTO_CREATE_TABLES:
+        ensure_schema_is_current()
     if AUTO_CREATE_TABLES:
         Base.metadata.create_all(bind=engine)
         with SessionLocal() as session:
@@ -689,7 +1047,7 @@ def complete_analysis_run(run_id: int, result: dict) -> dict:
         if run is None or run.status != ANALYSIS_RUNNING:
             raise ValueError("Analysis run is not available for completion")
 
-        ensure_default_topics(session)
+        ensure_default_topics(session, owner_user_id=require_owner_id())
 
         for bucket in result["buckets"]:
             topic_id = _topic_id_by_name(session, bucket["name"])
@@ -1662,7 +2020,7 @@ def dismiss_relation_in_db(relation_id: int) -> Optional[dict]:
 
 def get_organization_dashboard() -> dict:
     with SessionLocal() as session:
-        ensure_default_topics(session)
+        ensure_default_topics(session, owner_user_id=require_owner_id())
         session.commit()
         topics = list_topics_from_db()
         insights = {

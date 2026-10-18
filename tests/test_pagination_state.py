@@ -31,15 +31,18 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("LIFE_INBOX_AUTO_CREATE_TABLES", "1")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-    sys.modules.pop("app.database", None)
-    sys.modules.pop("app.main", None)
+    for module_name in ("app.main", "app.database", "app.auth", "app.config"):
+        sys.modules.pop(module_name, None)
     main = importlib.import_module("app.main")
     database = importlib.import_module("app.database")
 
     assert database.engine.url.database == str(test_db_path)
     from fastapi.testclient import TestClient
 
+    from tests.auth_helpers import register
+
     with TestClient(main.app) as test_client:
+        register(test_client, "owner@example.com", display_name="Owner")
         yield test_client
 
     database.engine.dispose()
