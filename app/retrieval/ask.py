@@ -22,7 +22,11 @@ _MAX_PASSAGE_CHARS = 400
 _MAX_EVIDENCE_TOTAL_CHARS = 6000
 _MAX_ANSWER_CHARS = 2000
 
-ASK_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+ASK_MODEL = (
+    os.getenv("NVIDIA_LLM_MODEL")
+    or os.getenv("OPENAI_MODEL")
+    or "nvidia/nemotron-3.5-bolt-e4b"
+)
 
 
 def _citation_id(item_id: int, index: int) -> str:
@@ -214,9 +218,43 @@ Evidence (JSON):
 
     from openai import OpenAI
 
-    client = OpenAI()
-    response = client.responses.create(model=ASK_MODEL, input=prompt)
-    raw = getattr(response, "output_text", None)
+    api_key = os.getenv("NVIDIA_API_KEY") or os.getenv("OPENAI_API_KEY")
+    base_url = os.getenv(
+        "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
+    )
+    try:
+        client = OpenAI(base_url=base_url, api_key=api_key)
+    except TypeError:
+        try:
+            client = OpenAI(api_key=api_key)
+        except TypeError:
+            client = OpenAI()
+
+    model_name = (
+        os.getenv("NVIDIA_LLM_MODEL")
+        or os.getenv("OPENAI_MODEL")
+        or ASK_MODEL
+    )
+    if hasattr(client, "chat") and hasattr(client.chat, "completions"):
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
+        raw = (
+            response.choices[0].message.content
+            if response.choices and response.choices[0].message
+            else None
+        )
+    elif hasattr(client, "responses"):
+        response = client.responses.create(
+            model=model_name,
+            prompt=prompt,
+            temperature=0.2,
+        )
+        raw = getattr(response, "output_text", None)
+    else:
+        raw = None
     if not isinstance(raw, str) or not raw.strip():
         return None
     parsed = extract_json_object(raw)
@@ -248,7 +286,9 @@ def build_grounded_answer(
 
     citations = _build_citations(ranked)
 
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = (
+        os.getenv("NVIDIA_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
+    ).strip()
     if api_key:
         try:
             synthesized = _synthesize_from_evidence(question, citations)
@@ -272,7 +312,7 @@ def build_grounded_answer(
                 }
         except Exception:
             logger.exception(
-                "Ask My Inbox LLM synthesis failed; using extractive fallback"
+                "Ask My Inbox NIM LLM synthesis failed; using extractive fallback"
             )
 
     return _extractive_payload(question, ranked, citations)

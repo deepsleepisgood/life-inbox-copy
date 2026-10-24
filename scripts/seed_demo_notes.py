@@ -4,8 +4,19 @@ import os
 from app.database import add_note_to_db, init_db, list_notes_from_db
 
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 NUM_DEMO_NOTES = 25
-MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+NVIDIA_BASE_URL = os.getenv(
+    "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
+)
+MODEL = (
+    os.getenv("NVIDIA_LLM_MODEL")
+    or os.getenv("OPENAI_MODEL")
+    or "meta/llama-3.1-70b-instruct"
+)
 
 FALLBACK_DEMO_NOTES = [
     "Call CA tomorrow about the advance tax calculation.",
@@ -51,13 +62,15 @@ def extract_json_array(raw: str):
 
 
 def generate_demo_notes(n=25):
-    if not os.getenv("OPENAI_API_KEY"):
+    api_key = os.getenv("NVIDIA_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not api_key:
         print("No API key found. Using local fallback notes.")
         return FALLBACK_DEMO_NOTES[:n]
 
     try:
         from openai import OpenAI
-        client = OpenAI()
+
+        client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key)
 
         prompt = f"""
 Generate exactly {n} realistic raw notes from one busy person's personal inbox.
@@ -85,8 +98,17 @@ Requirements:
 - Return ONLY a JSON array of strings.
 """
 
-        response = client.responses.create(model=MODEL, input=prompt)
-        generated = extract_json_array(response.output_text)
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+        )
+        content = (
+            response.choices[0].message.content
+            if response.choices and response.choices[0].message
+            else ""
+        )
+        generated = extract_json_array(content)
 
         clean = [str(x).strip() for x in generated if str(x).strip()]
         if len(clean) < 20:

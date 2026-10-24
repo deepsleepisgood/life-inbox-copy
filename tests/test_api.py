@@ -29,6 +29,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("LIFE_INBOX_AUTO_CREATE_TABLES", "1")
     monkeypatch.setenv("LIFE_INBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
 
     for module_name in (
         "app.main",
@@ -1858,6 +1859,69 @@ def test_voice_transcript_flows_into_ask_retrieval(client, monkeypatch):
     assert "Atomic Habits" in data["answer"]
 
 
+def test_voice_nvidia_nim_pipeline_cleans_transcript(client, monkeypatch):
+    from types import SimpleNamespace
+    import openai
+    from tests.voice_fixtures import make_wav_bytes
+
+    wav = make_wav_bytes()
+
+    def fake_transcribe(**_kwargs):
+        return SimpleNamespace(
+            text="Um, uh, remember to call Dr. Aris, like, tomorrow morning"
+        )
+
+    def fake_chat_complete(**_kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="Remember to call Dr. Aris tomorrow morning."
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("LIFE_INBOX_DISABLE_TRANSCRIPTION", raising=False)
+    monkeypatch.setattr(
+        openai,
+        "OpenAI",
+        lambda *args, **kwargs: SimpleNamespace(
+            audio=SimpleNamespace(
+                transcriptions=SimpleNamespace(create=fake_transcribe)
+            ),
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=fake_chat_complete)
+            ),
+        ),
+    )
+
+    resp = client.post(
+        "/api/items/voice",
+        files={"file": ("memo.wav", wav, "audio/wav")},
+    )
+    assert resp.status_code == 200
+    item = resp.json()
+    assert item["item_type"] == "voice"
+    assert item["processing_status"] == "ready"
+    assert item["extracted_text"] == "Um, uh, remember to call Dr. Aris, like, tomorrow morning"
+    assert item["raw_text"] == "Remember to call Dr. Aris tomorrow morning."
+
+    # Verify voice item can be edited via PUT /api/notes/{id}
+    edited = client.put(
+        f"/api/notes/{item['id']}",
+        json={"text": "Remember to call Dr. Aris tomorrow afternoon."},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["text"] == "Remember to call Dr. Aris tomorrow afternoon."
+
+    # Verify voice item can be deleted
+    deleted = client.delete(f"/api/notes/{item['id']}")
+    assert deleted.status_code == 204
+
+
 def test_attention_board_buckets_and_briefing(client):
     client.post(
         "/api/items",
@@ -2045,3 +2109,58 @@ def test_health_includes_config_metadata(client):
     assert payload["status"] == "ok"
     assert "environment" in payload
     assert "database" in payload
+
+
+def test_single_note_analysis_and_dashboard_completion_exclusion(client, monkeypatch):
+    """Test targeted single-note analysis, cumulative merging, and completed items filtering."""
+    item1 = client.post(
+        "/api/items", json={"raw_text": "Doctor appointment Friday 3pm"}
+    ).json()
+    item2 = client.post(
+        "/api/items", json={"raw_text": "Buy groceries tomorrow"}
+    ).json()
+
+    # 1. Analyze single item 1
+    res1 = client.post(f"/api/analyze?item_id={item1['id']}")
+    assert res1.status_code == 200
+    data1 = res1.json()
+    assert any(b["name"] for b in data1["buckets"])
+
+    # 2. Analyze single item 2
+    res2 = client.post(f"/api/analyze?item_id={item2['id']}")
+    assert res2.status_code == 200
+    data2 = res2.json()
+    # Both notes should be present in cumulative analysis buckets
+    all_note_ids = {n["id"] for b in data2["buckets"] for n in b.get("notes", [])}
+    assert item1["id"] in all_note_ids
+    assert item2["id"] in all_note_ids
+
+    # 3. Check dashboard before completion
+    dash1 = client.get("/api/dashboard").json()
+    dash1_ids = {i["id"] for i in dash1.get("recently_captured", [])}
+    assert item1["id"] in dash1_ids
+    assert item2["id"] in dash1_ids
+
+    # 4. Complete item 1 via POST /api/items/{id}/complete
+    comp_res = client.post(f"/api/items/{item1['id']}/complete")
+    assert comp_res.status_code == 200
+
+    # 5. Dashboard must completely exclude completed item 1
+    dash2 = client.get("/api/dashboard").json()
+    recent_ids = {i["id"] for i in dash2.get("recently_captured", [])}
+    high_ids = {i["id"] for i in dash2.get("high_priority", [])}
+    needs_review_ids = {i["id"] for i in dash2.get("needs_review", [])}
+    assert item1["id"] not in recent_ids
+    assert item1["id"] not in high_ids
+    assert item1["id"] not in needs_review_ids
+    assert item2["id"] in recent_ids
+
+    # Latest analysis returned in dashboard must also exclude completed item 1
+    if dash2.get("analysis"):
+        active_analysis_ids = {
+            n["id"]
+            for b in dash2["analysis"].get("buckets", [])
+            for n in b.get("notes", [])
+        }
+        assert item1["id"] not in active_analysis_ids
+

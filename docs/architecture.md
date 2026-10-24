@@ -7,18 +7,19 @@
 - **Migrations:** Alembic (authoritative schema owner)
 - **DB:** SQLite locally (temp/test DBs for development)
 - **UI:** HTML + vanilla JS/CSS
-- **AI:** OpenAI optional; deterministic fallback organizer always available
+- **AI:** NVIDIA NIM (`https://integrate.api.nvidia.com/v1`); deterministic fallback organizer always available
+- **Voice / Speech:** Browser MediaRecorder + ffmpeg 16kHz WAV conversion + NVIDIA NIM ASR (`openai/whisper-large-v3`) + NVIDIA NIM LLM transcript cleanup (`meta/llama-3.1-70b-instruct`)
 
 ## Core modules
 
 | Module | Responsibility |
 | --- | --- |
-| `app/main.py` | HTTP routes, error shaping |
+| `app/main.py` | HTTP routes, error shaping, startup health checks |
 | `app/database.py` | Models, persistence helpers, fingerprints, task upsert |
 | `app/schemas.py` | Request/response and analysis contracts |
-| `app/organizer.py` | OpenAI + fallback organization |
-| `app/capture/` | Rich capture (URL, PDF, image, voice, lifecycle) |
-| `app/retrieval/` | Keyword + local TF-IDF search, grounded Ask My Inbox |
+| `app/organizer.py` | NVIDIA NIM + fallback organization |
+| `app/capture/` | Rich capture (URL, PDF, image, voice note pipeline) |
+| `app/retrieval/` | Keyword + local TF-IDF search, grounded Ask My Inbox (NVIDIA NIM) |
 | `app/attention/` | Timing parse, attention buckets, briefing helpers |
 | `app/integrations/` | Replaceable Calendar adapter (mock / preview-only Google) |
 | `app/auth.py` / `app/config.py` | Session auth + startup config validation |

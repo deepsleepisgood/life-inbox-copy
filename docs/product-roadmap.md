@@ -39,6 +39,10 @@ with preview + explicit confirmation only.
 Auth, ownership scoping, Postgres for prod, storage abstraction, health,
 deployment guide. Stop before paid infra / public deploy without approval.
 
+## Milestone 7 — NVIDIA NIM AI & Voice Note Taking (done)
+
+Migration of AI provider to NVIDIA NIM (OpenAI-compatible endpoints) with `.env` loading; 4-state browser voice recording (idle, recording with pulsing indicator + timer, transcribing spinner, error) with MediaRecorder and ffmpeg 16kHz WAV conversion; NVIDIA NIM ASR (`openai/whisper-large-v3`) + strict NIM LLM transcript cleanup (`meta/llama-3.1-70b-instruct`) preserving all facts while stripping filler words and stutters; voice note edit/delete in UI; frictionless onboarding via setup scripts (`setup.sh`, `setup.ps1`) and non-blocking startup sanity checks.
+
 ## Execution priority (time-constrained)
 
-M1 (fast) → M2 showcase → M3A → M3B → M4 → M3C images → M3D voice → M5 → M6.
+M1 (fast) → M2 showcase → M3A → M3B → M4 → M3C images → M3D voice → M5 → M6 → M7.
