@@ -187,6 +187,10 @@ def _apply_security_headers(request: Request, response: Response) -> None:
     path = request.url.path
     if path.startswith("/api/") or path in {"/", "/login"}:
         response.headers.setdefault("Cache-Control", "no-store")
+    elif path.startswith("/static/"):
+        # Revalidate on every load (cheap 304 via ETag) so a browser never
+        # runs an old script against a newer page after an update.
+        response.headers.setdefault("Cache-Control", "no-cache")
     if load_config(strict=False).environment in {"beta", "production"}:
         response.headers.setdefault(
             "Strict-Transport-Security", "max-age=31536000; includeSubDomains"

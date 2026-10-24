@@ -83,26 +83,5 @@ ul { padding-left: 22px; }
 .account-settings { margin-top: 8px; }
 .account-settings summary { cursor: pointer; color: #0b7285; font-weight: 600; }
 
-/* Auth: login / register page */
-.auth-page { display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; margin: 0; padding: 48px 16px; box-sizing: border-box; }
-.auth-card { width: 100%; max-width: 400px; background: white; border: 1px solid #e5e7eb; border-radius: 14px; padding: 28px; box-shadow: 0 4px 16px rgba(0,0,0,0.05); }
-.auth-card h1 { margin-top: 0; }
-.auth-tabs { display: flex; gap: 4px; background: #f1f3f5; border-radius: 10px; padding: 4px; margin: 16px 0; }
-.auth-tab { flex: 1; margin: 0; background: transparent; color: #495057; padding: 8px; }
-.auth-tab.active { background: white; color: #111; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
-.auth-stack { display: grid; gap: 14px; }
-.auth-stack label { display: grid; gap: 6px; color: #333; font-size: 14px; font-weight: 600; }
-.auth-stack input[type="email"], .auth-stack input[type="password"], .auth-stack input[type="text"] { width: 100%; padding: 10px 12px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; }
-.auth-stack input:focus { outline: 2px solid #0b7285; outline-offset: 1px; }
-.auth-stack button[type="submit"] { margin: 4px 0 0; width: 100%; padding: 12px; font-size: 16px; }
-.auth-stack label.check { display: flex; align-items: flex-start; gap: 8px; font-weight: 400; }
-.auth-stack label.check input { margin-top: 3px; }
-.password-field { position: relative; display: block; }
-.password-field input { padding-right: 64px !important; }
-.password-field .toggle-password { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); }
-.link-button { background: none; color: #0b7285; padding: 4px; margin: 0; font-weight: 600; justify-self: start; }
-.small { font-size: 13px; font-weight: 400; }
-.auth-subtitle { font-size: 18px; margin: 8px 0 0; }
-#authMessage:empty { display: none; }
 .legal { background: white; border: 1px solid #e5e7eb; border-radius: 12px; padding: 24px 32px; line-height: 1.55; }
 .draft-banner { background: #fff4e5; border: 1px solid #f5c26b; border-radius: 8px; padding: 10px 12px; color: #7a4b00; }

@@ -66,8 +66,9 @@ def test_logged_out_home_redirects_to_login(client):
 def test_login_page_contains_no_app_markup(client):
     response = client.get("/login")
     assert response.status_code == 200
-    assert "Create account" in response.text
-    assert "Sign in" in response.text
+    assert "Create New Life" in response.text
+    assert "Enter your Life" in response.text
+    assert "/static/login.css" in response.text
     assert "noteText" not in response.text
     assert "/static/app.js" not in response.text
 
@@ -434,6 +435,9 @@ def test_security_headers_present(client):
     assert response.headers["cache-control"] == "no-store"
     api = client.get("/api/items")
     assert api.headers["cache-control"] == "no-store"
+    # Scripts/styles must be revalidated so updates are never masked by cache.
+    for asset in ("/static/auth.js", "/static/app.js", "/static/styles.css"):
+        assert client.get(asset).headers["cache-control"] == "no-cache", asset
 
 
 def test_require_owner_id_has_no_shared_fallback(database):

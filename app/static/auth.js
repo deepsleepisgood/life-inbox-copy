@@ -13,10 +13,32 @@ function showMessage(text, isError = true) {
   box.classList.toggle('error', isError);
 }
 
+const CARD_COPY = {
+  signIn: {
+    title: 'Enter your <span class="life">Life</span>',
+    lead: 'Welcome back. Everything is right where you left it.'
+  },
+  register: {
+    title: 'Create New <span class="life">Life</span>',
+    lead: 'A calm place for every thought, plan and idea. It takes a minute.'
+  },
+  forgot: {
+    title: 'Find your way <span class="life">back</span>',
+    lead: "It happens to everyone. We'll get you back in."
+  }
+};
+
+function setCardCopy(view) {
+  // Static strings only; no user input is ever inserted as HTML.
+  $('cardTitle').innerHTML = CARD_COPY[view].title;
+  $('cardLead').textContent = CARD_COPY[view].lead;
+}
+
 function selectTab(name) {
   const signIn = name === 'signIn';
   $('forgotPanel').hidden = true;
-  document.querySelector('.auth-tabs').hidden = false;
+  document.querySelector('.tabs').hidden = false;
+  setCardCopy(signIn ? 'signIn' : 'register');
   $('signInForm').hidden = !signIn;
   $('registerForm').hidden = signIn;
   $('tabSignIn').classList.toggle('active', signIn);
@@ -74,7 +96,7 @@ async function handleSignIn(event) {
     return;
   }
   const button = $('signInButton');
-  setBusy(button, true, 'Signing in…');
+  setBusy(button, true, 'Entering your Life…');
   try {
     await postJson('/api/auth/login', {email, password});
     window.location.replace('/');
@@ -115,7 +137,7 @@ async function handleRegister(event) {
   }
 
   const button = $('registerButton');
-  setBusy(button, true, 'Creating account…');
+  setBusy(button, true, 'Creating your new Life…');
   try {
     await postJson('/api/auth/register', {
       display_name: displayName,
@@ -138,7 +160,8 @@ let resendTimer = null;
 function showForgotPanel() {
   $('signInForm').hidden = true;
   $('registerForm').hidden = true;
-  document.querySelector('.auth-tabs').hidden = true;
+  document.querySelector('.tabs').hidden = true;
+  setCardCopy('forgot');
   $('forgotPanel').hidden = false;
   $('forgotRequestForm').hidden = false;
   $('forgotResetForm').hidden = true;
@@ -240,6 +263,31 @@ async function handleForgotReset(event) {
   }
 }
 
+// --- gentle affirmations ----------------------------------------------------
+
+const AFFIRMATIONS = [
+  'Your mind is for having ideas, not holding them.',
+  'You are not stressed. You are free.',
+  'Ambitious, creative, and unhurried.',
+  'Nothing gets lost. Everything finds its place.',
+  'One calm step at a time is still forward.'
+];
+
+function startAffirmations() {
+  const line = $('affirmation');
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!line || reduceMotion) return;
+  let index = 0;
+  setInterval(() => {
+    line.classList.add('fading');
+    setTimeout(() => {
+      index = (index + 1) % AFFIRMATIONS.length;
+      line.textContent = AFFIRMATIONS[index];
+      line.classList.remove('fading');
+    }, 600);
+  }, 6000);
+}
+
 function togglePassword(event) {
   const button = event.currentTarget;
   const input = $(button.dataset.target);
@@ -261,4 +309,5 @@ $('forgotBackButton').addEventListener('click', () => selectTab('signIn'));
 document.querySelectorAll('.toggle-password').forEach((button) => {
   button.addEventListener('click', togglePassword);
 });
+startAffirmations();
 $('signInEmail').focus();
