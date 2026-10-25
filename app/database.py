@@ -27,6 +27,7 @@ from sqlalchemy import (
     func,
     or_,
     select,
+    update,
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -890,7 +891,7 @@ def update_item_in_db(item_id: int, raw_text: str) -> Optional[dict]:
         item = session.get(InboxItemRecord, item_id)
         if (
             item is None
-            or item.item_type != TEXT_ITEM_TYPE
+            or item.item_type not in (TEXT_ITEM_TYPE, VOICE_ITEM_TYPE)
             or item.owner_user_id != owner_id
         ):
             return None
@@ -953,6 +954,48 @@ def delete_item_from_db(item_id: int) -> bool:
         return True
 
 
+def complete_item_in_db(item_id: int) -> dict:
+    owner_id = require_owner_id()
+    completed_at = datetime.now(timezone.utc).isoformat()
+    with SessionLocal() as session:
+        item = session.get(InboxItemRecord, item_id)
+        if item is None or item.owner_user_id != owner_id:
+            raise ValueError(f"Item {item_id} not found")
+
+        tasks = session.scalars(
+            select(TaskRecord)
+            .join(TaskSourceItemRecord)
+            .where(TaskSourceItemRecord.item_id == item_id)
+        ).all()
+
+        if tasks:
+            for task in tasks:
+                if task.status != TASK_COMPLETED:
+                    task.status = TASK_COMPLETED
+                    task.updated_at = completed_at
+        else:
+            task_title = item.title or (
+                (item.raw_text or item.extracted_text or "Note").strip().split("\n")[0][:60]
+            )
+            clean_title = task_title or "Note"
+            dedup_key = _task_dedup_key([item_id], clean_title)
+            task = TaskRecord(
+                text=clean_title,
+                priority="Medium",
+                status=TASK_COMPLETED,
+                dedup_key=dedup_key,
+                owner_user_id=owner_id,
+                created_at=completed_at,
+                updated_at=completed_at,
+            )
+            session.add(task)
+            session.flush()
+            session.add(TaskSourceItemRecord(task_id=task.id, item_id=item_id))
+
+        session.commit()
+        return _item_to_dict(item)
+
+
 def _item_to_note(item: dict) -> dict:
     return {
         "id": item["id"],
@@ -965,10 +1008,22 @@ def add_note_to_db(text: str) -> dict:
     return _item_to_note(add_item_to_db(text))
 
 
-def list_notes_from_db() -> list[dict]:
+def list_notes_from_db(exclude_completed: bool = False) -> list[dict]:
     """Analyzable ready items exposed in the legacy note shape for the organizer."""
+    completed_ids = set()
+    if exclude_completed:
+        with SessionLocal() as session:
+            completed_ids = set(
+                session.scalars(
+                    select(TaskSourceItemRecord.item_id)
+                    .join(TaskRecord)
+                    .where(TaskRecord.status == TASK_COMPLETED)
+                ).all()
+            )
     notes = []
     for item in list_items_from_db(limit=None, offset=0):
+        if exclude_completed and item["id"] in completed_ids:
+            continue
         if item["item_type"] not in ANALYZABLE_TYPES:
             continue
         if item["processing_status"] not in ANALYZABLE_STATUSES:
@@ -984,6 +1039,24 @@ def list_notes_from_db() -> list[dict]:
             }
         )
     return notes
+
+
+def get_note_from_db(item_id: int) -> Optional[dict]:
+    item = get_item_from_db(item_id)
+    if (
+        not item
+        or item["item_type"] not in ANALYZABLE_TYPES
+        or item["processing_status"] not in ANALYZABLE_STATUSES
+    ):
+        return None
+    text = item.get("extracted_text") or item.get("raw_text")
+    if not text:
+        return None
+    return {
+        "id": item["id"],
+        "text": text,
+        "created_at": item["created_at"],
+    }
 
 
 def update_note_in_db(note_id: int, text: str) -> Optional[dict]:
@@ -1040,7 +1113,77 @@ def _normalize_task_text(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def complete_analysis_run(run_id: int, result: dict) -> dict:
+def merge_analysis_into_cumulative(
+    previous_json: Optional[str],
+    single_result: dict,
+    completed_item_ids: set[int],
+) -> dict:
+    if not previous_json:
+        return single_result
+    try:
+        prev = json.loads(previous_json)
+        if not isinstance(prev, dict) or "buckets" not in prev:
+            return single_result
+    except Exception:
+        return single_result
+
+    new_note_ids = {
+        n["id"]
+        for b in single_result.get("buckets", [])
+        for n in b.get("notes", [])
+    }
+
+    merged_buckets: dict[str, list[dict]] = {}
+    for b in prev.get("buckets", []):
+        name = b["name"]
+        active_notes = [
+            n for n in b.get("notes", [])
+            if n["id"] not in new_note_ids and n["id"] not in completed_item_ids
+        ]
+        if active_notes:
+            merged_buckets[name] = active_notes
+
+    for b in single_result.get("buckets", []):
+        name = b["name"]
+        for n in b.get("notes", []):
+            if n["id"] not in completed_item_ids:
+                merged_buckets.setdefault(name, []).append(n)
+
+    merged_pv: dict[str, list[dict]] = {"High": [], "Medium": [], "Low": []}
+    prev_pv = prev.get("priority_view", {})
+    if isinstance(prev_pv, dict):
+        for level in ("High", "Medium", "Low"):
+            for n in prev_pv.get(level, []):
+                if n["id"] not in new_note_ids and n["id"] not in completed_item_ids:
+                    merged_pv[level].append(n)
+    single_pv = single_result.get("priority_view", {})
+    if isinstance(single_pv, dict):
+        for level in ("High", "Medium", "Low"):
+            for n in single_pv.get(level, []):
+                if n["id"] not in completed_item_ids:
+                    merged_pv[level].append(n)
+
+    merged_todos = []
+    for t in prev.get("todos", []):
+        sources = set(t.get("source_note_ids", []))
+        if not (sources & new_note_ids) and not (sources and sources <= completed_item_ids):
+            merged_todos.append(t)
+    for t in single_result.get("todos", []):
+        sources = set(t.get("source_note_ids", []))
+        if not (sources and sources <= completed_item_ids):
+            merged_todos.append(t)
+
+    return {
+        "buckets": [{"name": k, "notes": v} for k, v in merged_buckets.items()],
+        "todos": merged_todos,
+        "priority_view": merged_pv,
+        "mode": single_result.get("mode", "nvidia_nim"),
+    }
+
+
+def complete_analysis_run(
+    run_id: int, result: dict, merge_single: bool = False
+) -> dict:
     completed_at = datetime.now(timezone.utc).isoformat()
     with SessionLocal() as session:
         run = session.get(AnalysisRunRecord, run_id)
@@ -1216,9 +1359,61 @@ def complete_analysis_run(run_id: int, result: dict) -> dict:
                 )
             )
 
+        completed_item_ids = set(
+            session.scalars(
+                select(TaskSourceItemRecord.item_id)
+                .join(TaskRecord)
+                .where(TaskRecord.status == TASK_COMPLETED)
+            ).all()
+        )
+        persisted = result
+        if merge_single:
+            prev_run = session.scalars(
+                select(AnalysisRunRecord)
+                .where(
+                    AnalysisRunRecord.status == ANALYSIS_SUCCEEDED,
+                    AnalysisRunRecord.id != run_id,
+                    AnalysisRunRecord.owner_user_id == require_owner_id(),
+                )
+                .order_by(
+                    AnalysisRunRecord.completed_at.desc(),
+                    AnalysisRunRecord.id.desc(),
+                )
+                .limit(1)
+            ).first()
+            if prev_run and prev_run.result_json:
+                persisted = merge_analysis_into_cumulative(
+                    prev_run.result_json,
+                    result,
+                    completed_item_ids,
+                )
+        else:
+            filtered_buckets = []
+            for b in persisted.get("buckets", []):
+                active_notes = [
+                    n for n in b.get("notes", [])
+                    if n.get("id") not in completed_item_ids
+                ]
+                if active_notes:
+                    filtered_buckets.append({**b, "notes": active_notes})
+            persisted["buckets"] = filtered_buckets
+            pv = persisted.get("priority_view", {})
+            if isinstance(pv, dict):
+                persisted["priority_view"] = {
+                    level: [
+                        n for n in pv.get(level, [])
+                        if n.get("id") not in completed_item_ids
+                    ]
+                    for level in ["High", "Medium", "Low"]
+                }
+            persisted["todos"] = [
+                t for t in persisted.get("todos", [])
+                if not (set(t.get("source_note_ids", [])) <= completed_item_ids)
+            ]
+
         fingerprint = compute_inbox_fingerprint(session)
         persisted = {
-            **result,
+            **persisted,
             "inbox_fingerprint": fingerprint,
         }
         run.completed_at = completed_at
@@ -1227,7 +1422,7 @@ def complete_analysis_run(run_id: int, result: dict) -> dict:
         run.result_json = json.dumps(persisted, ensure_ascii=False)
         session.commit()
         return {
-            **result,
+            **persisted,
             "analysis_run_id": run_id,
             "generated_at": completed_at,
             "is_stale": False,
@@ -1266,6 +1461,36 @@ def get_latest_successful_analysis() -> Optional[dict]:
         if run is None:
             return None
         stored = json.loads(run.result_json)
+        completed_item_ids = set(
+            session.scalars(
+                select(TaskSourceItemRecord.item_id)
+                .join(TaskRecord)
+                .where(TaskRecord.status == TASK_COMPLETED)
+            ).all()
+        )
+        if completed_item_ids:
+            filtered_buckets = []
+            for b in stored.get("buckets", []):
+                active_notes = [
+                    n for n in b.get("notes", [])
+                    if n.get("id") not in completed_item_ids
+                ]
+                if active_notes:
+                    filtered_buckets.append({**b, "notes": active_notes})
+            stored["buckets"] = filtered_buckets
+            pv = stored.get("priority_view", {})
+            if isinstance(pv, dict):
+                stored["priority_view"] = {
+                    level: [
+                        n for n in pv.get(level, [])
+                        if n.get("id") not in completed_item_ids
+                    ]
+                    for level in ["High", "Medium", "Low"]
+                }
+            stored["todos"] = [
+                t for t in stored.get("todos", [])
+                if not (set(t.get("source_note_ids", [])) <= completed_item_ids)
+            ]
         fingerprint = stored.pop("inbox_fingerprint", None)
         current = compute_inbox_fingerprint(session)
         return {
@@ -1356,6 +1581,68 @@ def set_task_status(task_id: int, task_status: str) -> Optional[dict]:
             task.updated_at = datetime.now(timezone.utc).isoformat()
             session.commit()
         return _task_to_dict(session, task)
+
+
+def list_calendar_events_from_db(start_date: str, end_date: str) -> list[dict]:
+    from app.attention.dates import parse_timing_phrase
+
+    owner_id = require_owner_id()
+    with SessionLocal() as session:
+        # Retroactively normalize any tasks that have timing_text but missing due_on
+        unnormalized = session.scalars(
+            select(TaskRecord)
+            .where(TaskRecord.owner_user_id == owner_id)
+            .where(TaskRecord.due_on.is_(None))
+            .where(TaskRecord.timing_text.isnot(None))
+        ).all()
+        if unnormalized:
+            for task in unnormalized:
+                _ensure_task_due_fields(task)
+            session.commit()
+
+        tasks = session.scalars(
+            select(TaskRecord)
+            .where(TaskRecord.owner_user_id == owner_id)
+            .where(TaskRecord.due_on.isnot(None))
+            .where(TaskRecord.due_on >= start_date)
+            .where(TaskRecord.due_on <= end_date)
+            .where(TaskRecord.status.in_([TASK_OPEN, TASK_COMPLETED]))
+            .order_by(TaskRecord.due_on.asc(), TaskRecord.id.asc())
+        ).all()
+
+        events = []
+        for task in tasks:
+            sources = session.scalars(
+                select(InboxItemRecord)
+                .join(TaskSourceItemRecord, TaskSourceItemRecord.item_id == InboxItemRecord.id)
+                .where(TaskSourceItemRecord.task_id == task.id)
+                .order_by(InboxItemRecord.id.asc())
+            ).all()
+
+            source_ids = [s.id for s in sources]
+            primary_source = sources[0] if sources else None
+            parsed = parse_timing_phrase(task.timing_text)
+            needs_confirmation = (not bool(task.timing_confirmed)) and parsed.needs_confirmation
+
+            events.append(
+                {
+                    "id": task.id,
+                    "title": task.text,
+                    "event_date": task.due_on,
+                    "priority": task.priority,
+                    "status": task.status,
+                    "timing_text": task.timing_text,
+                    "time_of_day": parsed.time_of_day,
+                    "timing_confirmed": bool(task.timing_confirmed),
+                    "due_confidence": task.due_confidence or parsed.confidence,
+                    "needs_confirmation": bool(needs_confirmation),
+                    "source_item_id": primary_source.id if primary_source else None,
+                    "source_item_ids": source_ids,
+                    "source_type": primary_source.item_type if primary_source else "text",
+                    "source_title": primary_source.title if primary_source else None,
+                }
+            )
+        return events
 
 
 def add_pdf_item_to_db(
@@ -1547,6 +1834,30 @@ def mark_item_processing(item_id: int) -> Optional[dict]:
         item.updated_at = datetime.now(timezone.utc).isoformat()
         session.commit()
         return _item_to_dict(item)
+
+
+def claim_item_for_retry(item_id: int) -> bool:
+    """Atomically claim a non-ready item for one retry worker."""
+    owner_id = require_owner_id()
+    now = datetime.now(timezone.utc).isoformat()
+    with SessionLocal() as session:
+        result = session.execute(
+            update(InboxItemRecord)
+            .where(
+                InboxItemRecord.id == item_id,
+                InboxItemRecord.owner_user_id == owner_id,
+                InboxItemRecord.processing_status.notin_(
+                    (STATUS_READY, STATUS_PROCESSING)
+                ),
+            )
+            .values(
+                processing_status=STATUS_PROCESSING,
+                error_message=None,
+                updated_at=now,
+            )
+        )
+        session.commit()
+        return result.rowcount == 1
 
 
 def complete_url_item_processing(
@@ -2027,11 +2338,19 @@ def get_organization_dashboard() -> dict:
             insight.item_id: _insight_to_dict(insight)
             for insight in session.scalars(select(ItemInsightRecord)).all()
         }
+        completed_item_ids = set(
+            session.scalars(
+                select(TaskSourceItemRecord.item_id)
+                .join(TaskRecord)
+                .where(TaskRecord.status == TASK_COMPLETED)
+            ).all()
+        )
         items = [
             _item_to_dict(item)
             for item in session.scalars(
                 select(InboxItemRecord).order_by(InboxItemRecord.id.desc())
             ).all()
+            if item.id not in completed_item_ids
         ]
         high_priority = []
         needs_review = []
@@ -2059,6 +2378,31 @@ def get_organization_dashboard() -> dict:
                 needs_review.append({**card, "reason": "Marked for review"})
 
         latest = get_latest_successful_analysis()
+        if latest:
+            latest = dict(latest)
+            filtered_buckets = []
+            for b in latest.get("buckets", []):
+                active_notes = [
+                    n for n in b.get("notes", [])
+                    if n.get("id") not in completed_item_ids
+                ]
+                if active_notes:
+                    filtered_buckets.append({**b, "notes": active_notes})
+            latest["buckets"] = filtered_buckets
+            pv = latest.get("priority_view", {})
+            if isinstance(pv, dict):
+                latest["priority_view"] = {
+                    level: [
+                        n for n in pv.get(level, [])
+                        if n.get("id") not in completed_item_ids
+                    ]
+                    for level in ["High", "Medium", "Low"]
+                }
+            latest["todos"] = [
+                t for t in latest.get("todos", [])
+                if not (set(t.get("source_note_ids", [])) <= completed_item_ids)
+            ]
+
         if latest and latest.get("is_stale"):
             for item in items:
                 if item["id"] in insights:
@@ -2073,8 +2417,17 @@ def get_organization_dashboard() -> dict:
                     )
                     break
 
-        open_tasks = list_tasks_from_db(TASK_OPEN)
-        relations = list_relations_from_db()
+        open_tasks = [
+            t
+            for t in list_tasks_from_db(TASK_OPEN)
+            if not (set(t.get("source_item_ids", [])) & completed_item_ids)
+        ]
+        relations = [
+            r
+            for r in list_relations_from_db()
+            if r["item_id_a"] not in completed_item_ids
+            and r["item_id_b"] not in completed_item_ids
+        ]
         return {
             "topics": topics,
             "high_priority": high_priority[:20],

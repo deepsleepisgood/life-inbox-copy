@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Life Inbox</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261025_02" />
 </head>
 <body>
   <div class="wrap">
@@ -39,35 +39,74 @@
       <p id="authStatus" class="status muted" role="status" aria-live="polite"></p>
     </div>
 
-    <textarea id="noteText" placeholder="Example: Met Rohan yesterday. He recommended Atomic Habits. Need to order it this weekend. Also ask him about that Gurgaon restaurant."></textarea>
-    <br />
-    <button id="addNoteButton" type="button" onclick="addNote()">Add Note</button>
-    <div class="url-capture">
-      <label for="urlText">Capture URL</label>
-      <input id="urlText" type="url" maxlength="2000" placeholder="https://example.com/article" />
-      <button id="addUrlButton" type="button" class="secondary" onclick="addUrl()">Save URL</button>
-    </div>
-    <div class="pdf-capture">
-      <label for="pdfFile">Upload PDF</label>
-      <input id="pdfFile" type="file" accept="application/pdf,.pdf" />
-      <button id="addPdfButton" type="button" class="secondary" onclick="addPdf()">Upload PDF</button>
-    </div>
-    <div class="image-capture">
-      <label for="imageFile">Upload image / screenshot</label>
-      <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif" />
-      <button id="addImageButton" type="button" class="secondary" onclick="addImage()">Upload image</button>
-    </div>
-    <div class="voice-capture">
-      <label for="voiceFile">Voice note</label>
-      <div class="voice-actions">
-        <button id="recordVoiceButton" type="button" class="secondary" onclick="toggleVoiceRecording()">Record</button>
-        <input id="voiceFile" type="file" accept="audio/*,video/webm,.webm,.wav,.mp3,.m4a,.ogg" />
-        <button id="addVoiceButton" type="button" class="secondary" onclick="addVoice()">Upload audio</button>
+    <section id="failureCenter" class="failure-center" aria-labelledby="failureCenterHeading">
+      <div>
+        <h2 id="failureCenterHeading">Failure &amp; Retry Center</h2>
+        <p class="sub">Review failed captures and retry them without uploading again.</p>
       </div>
-      <p id="voiceStatus" class="status muted" role="status" aria-live="polite"></p>
+      <button type="button" class="secondary" onclick="showFailedItems()">Review failed items</button>
+    </section>
+
+    <div class="capture-card">
+      <div class="capture-header">
+        <label for="noteText" class="capture-title">Quick Capture</label>
+        <span class="capture-sub">Type a thought or record your voice</span>
+      </div>
+      <textarea id="noteText" placeholder="Example: Met Rohan yesterday. He recommended Atomic Habits. Need to order it this weekend. Also ask him about that Gurgaon restaurant."></textarea>
+      <div class="note-input-actions">
+        <button id="addNoteButton" type="button" class="primary-btn" onclick="addNote()">Add Note</button>
+        <button id="micVoiceButton" type="button" class="mic-button idle" onclick="toggleVoiceRecording()" title="Record voice note" aria-label="Record voice note">
+          <span class="mic-icon" id="micIcon">🎙️</span>
+          <span class="mic-pulse" id="micPulse" style="display:none;"></span>
+          <span class="mic-timer" id="micTimer" style="display:none;">00:00</span>
+          <span class="mic-spinner" id="micSpinner" style="display:none;"></span>
+          <span class="mic-label" id="micLabel">Record note</span>
+        </button>
+      </div>
+      <p id="micVoiceStatus" class="status muted" role="status" aria-live="polite"></p>
+
+      <details class="more-capture-drawer">
+        <summary>More capture options (URL, PDF, Image, Audio upload)</summary>
+        <div class="more-capture-grid">
+          <div class="url-capture">
+            <label for="urlText">Capture URL</label>
+            <div class="inline-input-row">
+              <input id="urlText" type="url" maxlength="2000" placeholder="https://example.com/article" />
+              <button id="addUrlButton" type="button" class="secondary" onclick="addUrl()">Save URL</button>
+            </div>
+          </div>
+          <div class="pdf-capture">
+            <label for="pdfFile">Upload PDF</label>
+            <div class="inline-input-row">
+              <input id="pdfFile" type="file" accept="application/pdf,.pdf" />
+              <button id="addPdfButton" type="button" class="secondary" onclick="addPdf()">Upload</button>
+            </div>
+          </div>
+          <div class="image-capture">
+            <label for="imageFile">Upload image / screenshot</label>
+            <div class="inline-input-row">
+              <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif" />
+              <button id="addImageButton" type="button" class="secondary" onclick="addImage()">Upload</button>
+            </div>
+          </div>
+          <div class="voice-capture">
+            <label for="voiceFile">Upload audio file</label>
+            <div class="voice-actions">
+              <button id="recordVoiceButton" type="button" class="secondary" style="display:none;" onclick="toggleVoiceRecording()">Record</button>
+              <input id="voiceFile" type="file" accept="audio/*,video/webm,.webm,.wav,.mp3,.m4a,.ogg" />
+              <button id="addVoiceButton" type="button" class="secondary" onclick="addVoice()">Upload audio</button>
+            </div>
+            <p id="voiceStatus" class="status muted" role="status" aria-live="polite"></p>
+          </div>
+        </div>
+      </details>
     </div>
-    <button id="analyzeButton" type="button" class="secondary" onclick="analyzeInbox()">Analyze Entire Inbox with AI</button>
-    <p id="noteStatus" class="status muted" role="status" aria-live="polite"></p>
+
+    <div class="analyze-bar">
+      <button id="analyzeButton" type="button" class="secondary" onclick="analyzeInbox()">Analyze Entire Inbox with AI</button>
+      <span class="auto-analyze-hint">Notes auto-categorize instantly when added</span>
+      <p id="noteStatus" class="status muted" role="status" aria-live="polite"></p>
+    </div>
 
     <h2>Ask My Inbox</h2>
     <p class="sub">Search and ask questions grounded in your saved notes, URLs, and PDFs.</p>
@@ -117,6 +156,26 @@
     <div id="briefing" class="panel">
       <span class="muted">Open tasks with timing appear here after analysis.</span>
     </div>
+
+    <h3>In-app calendar</h3>
+    <p class="sub">Month view of dated notes and scheduled tasks.</p>
+    <p id="inAppCalendarStatus" class="status muted" role="status" aria-live="polite"></p>
+    <div id="inAppCalendar" class="panel calendar-panel">
+      <div class="calendar-header">
+        <div class="calendar-nav">
+          <button type="button" id="calPrevBtn" class="secondary cal-btn" aria-label="Previous month" onclick="changeCalendarMonth(-1)">◀</button>
+          <span id="calMonthYear" class="calendar-title" aria-live="polite"></span>
+          <button type="button" id="calNextBtn" class="secondary cal-btn" aria-label="Next month" onclick="changeCalendarMonth(1)">▶</button>
+        </div>
+        <button type="button" id="calTodayBtn" class="secondary cal-today-btn" onclick="jumpCalendarToToday()">Today</button>
+      </div>
+      <div id="calendarGrid" class="calendar-grid" role="grid" aria-label="Month calendar"></div>
+      <div id="calendarDayDetails" class="calendar-day-details" aria-live="polite">
+        <h4 id="calendarDayHeading">Select a day</h4>
+        <div id="calendarEventsList"></div>
+      </div>
+    </div>
+
     <div id="attention" class="dashboard"></div>
     <p id="calendarStatus" class="status muted" role="status" aria-live="polite"></p>
     <div id="calendarPreview" class="panel">
@@ -135,7 +194,7 @@
     <p id="taskStatus" class="status muted" role="status" aria-live="polite"></p>
     <div id="tasks"></div>
 
-    <h2>Raw saved notes</h2>
+    <h2 id="rawSavedNotesHeading">Raw saved notes</h2>
     <form id="itemSearchForm" class="search-toolbar" onsubmit="applyItemFilters(event)">
       <label>
         Search
@@ -179,13 +238,14 @@
       <div class="search-actions">
         <button type="submit">Search</button>
         <button type="button" class="secondary" onclick="clearItemFilters()">Clear</button>
+        <a href="/api/items/export.md" download>Export Markdown</a>
       </div>
     </form>
     <p id="searchStatus" class="status muted" role="status" aria-live="polite"></p>
     <div id="notes"></div>
   </div>
 
-  <script src="/static/pagination_state.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/pagination_state.js?v=20261025_01"></script>
+  <script src="/static/app.js?v=20261025_02"></script>
 </body>
 </html>

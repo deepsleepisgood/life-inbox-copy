@@ -107,13 +107,121 @@ def _title_from_filename(filename: str) -> str:
     stem = Path(filename).stem.strip()
     return stem or "Voice note"
 
+import shutil
+import subprocess
+
+STRICT_CLEANUP_SYSTEM_PROMPT = """You are an expert audio transcript cleaner for a personal Life Inbox.
+Your task is to clean up a raw spoken transcript into clear, written notes.
+
+Rules:
+1. Remove stutters, filler words (e.g., "um", "uh", "like", "you know", "er", "ah"), false starts, and accidental immediate repetitions.
+2. Fix punctuation, capitalization, and minor grammatical slips.
+3. STRICT PRESERVATION: You MUST preserve the speaker's exact meaning, facts, person names, places, numbers, amounts, dates, and intent.
+4. DO NOT add any information, external facts, or commentary.
+5. DO NOT summarize away details or shorten the content.
+6. DO NOT answer questions asked in the speech; output the spoken thoughts as notes.
+7. Output ONLY the cleaned transcript text. No preamble, no quotes, no markdown fences."""
+
+
+def convert_audio_to_wav(data: bytes, filename: str) -> tuple[bytes, str, str]:
+    """Convert audio bytes to 16kHz mono WAV using ffmpeg if installed.
+    Returns (audio_bytes, safe_filename, mime_type).
+    """
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        return data, filename, "application/octet-stream"
+    try:
+        proc = subprocess.run(
+            [
+                ffmpeg_bin,
+                "-y",
+                "-i",
+                "pipe:0",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-f",
+                "wav",
+                "pipe:1",
+            ],
+            input=data,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            timeout=15,
+        )
+        wav_bytes = proc.stdout
+        wav_filename = f"{Path(filename).stem}.wav"
+        return wav_bytes, wav_filename, "audio/wav"
+    except Exception as e:
+        logger.warning(
+            "ffmpeg conversion to 16kHz mono wav failed: %s; using original audio",
+            e,
+        )
+        return data, filename, "application/octet-stream"
+
+
+def cleanup_transcript_with_llm(
+    raw_transcript: str,
+    *,
+    api_key: str,
+    base_url: str,
+    model: str,
+) -> str:
+    """Clean raw speech transcript using NVIDIA NIM LLM.
+    Strictly preserves meaning, facts, and dates while stripping filler words and stutters.
+    """
+    if not raw_transcript or not raw_transcript.strip():
+        return ""
+    if not api_key:
+        return raw_transcript
+
+    try:
+        from openai import OpenAI
+
+        try:
+            client = OpenAI(base_url=base_url, api_key=api_key)
+        except TypeError:
+            try:
+                client = OpenAI(api_key=api_key)
+            except TypeError:
+                client = OpenAI()
+
+        if hasattr(client, "chat") and hasattr(client.chat, "completions"):
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": STRICT_CLEANUP_SYSTEM_PROMPT},
+                    {"role": "user", "content": raw_transcript},
+                ],
+                temperature=0.1,
+            )
+            cleaned = (
+                response.choices[0].message.content
+                if response.choices and response.choices[0].message
+                else ""
+            )
+            cleaned = (cleaned or "").strip()
+            return cleaned if cleaned else raw_transcript
+        return raw_transcript
+    except Exception as e:
+        logger.warning(
+            "NIM LLM transcript cleanup failed (%s); retaining raw transcript",
+            e,
+        )
+        return raw_transcript
+
 
 def _transcription_model() -> str:
-    """Model for audio transcription; override via OPENAI_TRANSCRIPTION_MODEL."""
-    return (
-        os.getenv("OPENAI_TRANSCRIPTION_MODEL", "").strip()
-        or "whisper-1"
-    )
+    """Model for audio transcription; prefer NVIDIA_ASR_MODEL with whisper-large-v3 default."""
+    nim_model = os.getenv("NVIDIA_ASR_MODEL", "").strip()
+    if nim_model:
+        return nim_model
+    openai_model = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "").strip()
+    if openai_model:
+        return openai_model
+    return "openai/whisper-large-v3" if os.getenv("NVIDIA_API_KEY") else "whisper-1"
 
 
 def _friendly_transcription_unavailable_note() -> str:
@@ -128,11 +236,12 @@ def transcribe_audio(
     *,
     original_filename: str,
     mime_type: str,
+    candidate_transcript: Optional[str] = None,
 ) -> dict:
     """Transcription adapter. Graceful when no live API is configured.
 
     Returns:
-        text, provider, available, note
+        text, cleaned_text, provider, available, note
     """
     if os.getenv("LIFE_INBOX_DISABLE_TRANSCRIPTION", "").strip().lower() in {
         "1",
@@ -141,53 +250,119 @@ def transcribe_audio(
     }:
         return {
             "text": "",
+            "cleaned_text": "",
             "provider": "disabled",
             "available": False,
             "note": "Transcription disabled via LIFE_INBOX_DISABLE_TRANSCRIPTION.",
         }
 
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = (
+        os.getenv("NVIDIA_API_KEY", "").strip()
+        or os.getenv("OPENAI_API_KEY", "").strip()
+    )
+    if api_key and not api_key.startswith("nvapi-") and not api_key.startswith("Bearer "):
+        api_key = f"nvapi-{api_key}"
+
     if not api_key:
+        key_name = (
+            "NVIDIA_API_KEY"
+            if not os.getenv("OPENAI_API_KEY")
+            else "OPENAI_API_KEY"
+        )
         return {
-            "text": "",
+            "text": candidate_transcript or "",
+            "cleaned_text": candidate_transcript or "",
             "provider": "none",
-            "available": False,
+            "available": bool(candidate_transcript),
             "note": (
-                "Transcription not configured. Set OPENAI_API_KEY for live "
-                "transcription, or edit the transcript manually."
+                None
+                if candidate_transcript
+                else (
+                    f"Transcription not configured. Set {key_name} for live "
+                    "transcription, or edit the transcript manually."
+                )
             ),
         }
 
+    base_url = os.getenv(
+        "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
+    )
+
+    raw_text = ""
     try:
         from openai import OpenAI
 
-        client = OpenAI()
+        try:
+            client = OpenAI(base_url=base_url, api_key=api_key)
+        except TypeError:
+            try:
+                client = OpenAI(api_key=api_key)
+            except TypeError:
+                client = OpenAI()
+
         model = _transcription_model()
-        safe_name = _normalize_filename(original_filename)
-        result = client.audio.transcriptions.create(
-            model=model,
-            file=(safe_name, data, mime_type or "application/octet-stream"),
+        audio_payload, send_name, send_mime = convert_audio_to_wav(
+            data, original_filename
         )
-        if isinstance(result, str):
-            text = result.strip()
-        else:
-            text = str(getattr(result, "text", "") or "").strip()
-        return {
-            "text": text,
-            "provider": "openai",
-            "available": True,
-            "note": None if text else "Transcription returned no spoken text.",
-        }
-    except Exception:
-        logger.exception(
-            "Voice transcription failed for %s; preserving audio with empty transcript",
-            original_filename,
-        )
+        safe_name = _normalize_filename(send_name)
+
+        if hasattr(client, "audio") and hasattr(client.audio, "transcriptions"):
+            result = client.audio.transcriptions.create(
+                model=model,
+                file=(
+                    safe_name,
+                    audio_payload,
+                    send_mime or mime_type or "application/octet-stream",
+                ),
+            )
+            if isinstance(result, str):
+                raw_text = result.strip()
+            else:
+                raw_text = str(getattr(result, "text", "") or "").strip()
+    except Exception as e:
+        logger.warning("Remote ASR transcription notice for %s: %s", original_filename, e)
+
+    if not raw_text and candidate_transcript:
+        raw_text = candidate_transcript.strip()
+
+    if not raw_text:
         return {
             "text": "",
+            "cleaned_text": "",
             "provider": "unavailable",
             "available": False,
             "note": _friendly_transcription_unavailable_note(),
+        }
+
+    try:
+        llm_model = os.getenv(
+            "NVIDIA_LLM_MODEL", "nvidia/nemotron-3.5-bolt-e4b"
+        )
+        cleaned_text = cleanup_transcript_with_llm(
+            raw_text,
+            api_key=api_key,
+            base_url=base_url,
+            model=llm_model,
+        )
+
+        provider = "nvidia_nim" if os.getenv("NVIDIA_API_KEY") else "openai"
+        return {
+            "text": raw_text,
+            "cleaned_text": cleaned_text,
+            "provider": provider,
+            "available": True,
+            "note": None,
+        }
+    except Exception:
+        logger.exception(
+            "Voice transcription processing failed for %s", original_filename
+        )
+        return {
+            "text": raw_text,
+            "cleaned_text": raw_text,
+            "provider": "fallback",
+            "available": True,
+            "note": None,
         }
 
 
@@ -196,19 +371,22 @@ def process_voice_bytes(
     *,
     original_filename: str,
     mime_type: str,
+    candidate_transcript: Optional[str] = None,
 ) -> dict:
     """Persist-ready processing result for a voice note."""
     transcription = transcribe_audio(
         data,
         original_filename=original_filename,
         mime_type=mime_type,
+        candidate_transcript=candidate_transcript,
     )
     title = _title_from_filename(original_filename)
-    transcript = transcription["text"]
+    raw_transcript = transcription["text"]
+    cleaned_transcript = transcription.get("cleaned_text") or raw_transcript
     note = transcription.get("note")
 
-    if transcript:
-        raw_text = transcript
+    if cleaned_transcript:
+        raw_text = cleaned_transcript
     else:
         raw_text = (
             f"[Voice note — transcript pending]\n"
@@ -219,7 +397,7 @@ def process_voice_bytes(
     return {
         "title": title,
         "raw_text": raw_text,
-        "extracted_text": transcript,
+        "extracted_text": raw_transcript,
         "mime_type": mime_type,
         "transcription_provider": transcription["provider"],
         "transcription_available": transcription["available"],

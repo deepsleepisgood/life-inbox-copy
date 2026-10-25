@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import (
     FileResponse,
@@ -55,7 +55,9 @@ from app.database import (
     complete_pdf_item_processing,
     complete_voice_item_processing,
     complete_analysis_run,
+    complete_item_in_db,
     complete_url_item_processing,
+    claim_item_for_retry,
     confirm_task_timing,
     create_topic_in_db,
     delete_item_from_db,
@@ -68,8 +70,10 @@ from app.database import (
     get_item_from_db,
     get_item_insight,
     get_latest_successful_analysis,
+    get_note_from_db,
     get_organization_dashboard,
     init_db,
+    list_calendar_events_from_db,
     list_items_from_db,
     list_notes_from_db,
     list_relations_from_db,
@@ -107,6 +111,7 @@ from app.schemas import (
     AskRequest,
     AskResponse,
     CalendarConfirmRequest,
+    CalendarEvent,
     CalendarPreviewRequest,
     ExtractedTextUpdate,
     InboxItem,
@@ -133,10 +138,58 @@ from app.schemas import (
 )
 
 
+from contextlib import asynccontextmanager
+
 APP_DIR = Path(__file__).resolve().parent
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Life Inbox")
+
+def _check_startup_health():
+    from app.config import load_config
+
+    config = load_config(strict=False)
+    if not config.nvidia_api_key:
+        logger.warning(
+            "⚠️ NVIDIA_API_KEY is not set. Life Inbox is running in offline mode: "
+            "using deterministic organization and extractive retrieval. "
+            "Add NVIDIA_API_KEY to .env for NVIDIA NIM LLM analysis and ASR voice transcription."
+        )
+
+    try:
+        from alembic.config import Config
+        from alembic.runtime.migration import MigrationContext
+        from alembic.script import ScriptDirectory
+
+        from app.database import engine
+
+        alembic_ini_path = APP_DIR.parent / "alembic.ini"
+        if alembic_ini_path.exists() and os.getenv("LIFE_INBOX_AUTO_CREATE_TABLES") != "1":
+            alembic_cfg = Config(str(alembic_ini_path))
+            script = ScriptDirectory.from_config(alembic_cfg)
+            head_rev = script.get_current_head()
+
+            with engine.connect() as conn:
+                context = MigrationContext.configure(conn)
+                current_rev = context.get_current_revision()
+
+            if current_rev != head_rev:
+                logger.warning(
+                    "⚠️ Database migrations are pending (current: %s, head: %s). "
+                    "Run 'alembic upgrade head' to bring your database schema up to date.",
+                    current_rev,
+                    head_rev,
+                )
+    except Exception as e:
+        logger.debug("Startup migration check skipped: %s", e)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _check_startup_health()
+    yield
+
+
+app = FastAPI(title="Life Inbox", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 
 init_db()
@@ -498,7 +551,9 @@ def _process_image_item(item_id: int) -> dict:
         return failed
 
 
-def _process_voice_item(item_id: int) -> dict:
+def _process_voice_item(
+    item_id: int, candidate_transcript: Optional[str] = None
+) -> dict:
     mark_item_processing(item_id)
     item = get_item_from_db(item_id)
     if item is None:
@@ -515,6 +570,7 @@ def _process_voice_item(item_id: int) -> dict:
             data,
             original_filename=item.get("original_filename") or "voice-note.webm",
             mime_type=item.get("mime_type") or "audio/webm",
+            candidate_transcript=candidate_transcript,
         )
         processed = complete_voice_item_processing(
             item_id,
@@ -661,7 +717,10 @@ async def create_image_item(file: UploadFile = File(...)):
 
 
 @app.post("/api/items/voice", response_model=InboxItem)
-async def create_voice_item(file: UploadFile = File(...)):
+async def create_voice_item(
+    file: UploadFile = File(...),
+    transcript: Optional[str] = Form(None),
+):
     data = await file.read()
     try:
         safe_filename, detected_mime, extension = validate_audio_upload(
@@ -709,7 +768,7 @@ async def create_voice_item(file: UploadFile = File(...)):
             detail="Unable to save voice note. Please try again.",
         ) from exc
 
-    return _process_voice_item(item["id"])
+    return _process_voice_item(item["id"], candidate_transcript=transcript)
 
 
 @app.get("/api/items/{item_id}/file")
@@ -775,6 +834,21 @@ def retry_item_processing(item_id: int):
         )
     if item["processing_status"] == "ready":
         return item
+    if item["processing_status"] == "processing":
+        raise HTTPException(
+            status_code=409,
+            detail="This item is already being processed.",
+        )
+    if not claim_item_for_retry(item_id):
+        current = get_item_from_db(item_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="Item not found.")
+        if current["processing_status"] == "ready":
+            return current
+        raise HTTPException(
+            status_code=409,
+            detail="This item is already being processed or could not be retried.",
+        )
     if item["item_type"] == "url":
         return _process_url_item(item_id)
     if item["item_type"] == "pdf":
@@ -810,6 +884,60 @@ def get_items(
             status_code=500,
             detail="Unable to load items. Please try again.",
         ) from exc
+
+
+def _markdown_code_block(value: str) -> str:
+    fence = "```"
+    while fence in value:
+        fence += "`"
+    return f"{fence}text\n{value}\n{fence}"
+
+
+@app.get("/api/items/export.md", response_class=Response)
+def export_items_markdown():
+    try:
+        items = list_items_from_db(limit=None, offset=0)
+    except Exception as exc:
+        logger.exception("Failed to export inbox items")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to export items. Please try again.",
+        ) from exc
+
+    markdown = ["# Life Inbox Export", ""]
+    for item in items:
+        markdown.extend([f"## Note {item['id']}", ""])
+        metadata = (
+            ("Title", "title"),
+            ("Type", "item_type"),
+            ("Created", "created_at"),
+            ("Source URL", "source_url"),
+            ("Original filename", "original_filename"),
+        )
+        for label, key in metadata:
+            value = item.get(key)
+            if value is not None and str(value).strip():
+                one_line_value = str(value).replace("\r", " ").replace("\n", " ")
+                markdown.append(f"- **{label}:** {one_line_value}")
+
+        included_text = set()
+        for label, key in (
+            ("Text", "raw_text"),
+            ("Extracted text", "extracted_text"),
+            ("AI description", "ai_description"),
+        ):
+            value = item.get(key)
+            if not isinstance(value, str) or not value.strip() or value in included_text:
+                continue
+            included_text.add(value)
+            markdown.extend(["", f"### {label}", "", _markdown_code_block(value)])
+        markdown.extend(["", "---", ""])
+
+    return Response(
+        content="\n".join(markdown).rstrip() + "\n",
+        media_type="text/markdown",
+        headers={"Content-Disposition": 'attachment; filename="life-inbox-export.md"'},
+    )
 
 
 @app.get("/api/items/{item_id}", response_model=InboxItem)
@@ -854,6 +982,21 @@ def delete_item(item_id: int):
     if not deleted:
         raise HTTPException(status_code=404, detail="Item not found.")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/api/items/{item_id}/complete", response_model=InboxItem)
+def complete_item(item_id: int):
+    try:
+        item = complete_item_in_db(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to complete inbox item")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to complete item. Please try again.",
+        ) from exc
+    return item
 
 
 @app.post("/api/notes", response_model=Note, deprecated=True)
@@ -1027,6 +1170,38 @@ def daily_briefing():
         raise HTTPException(
             status_code=500,
             detail="Unable to load daily briefing. Please try again.",
+        ) from exc
+
+
+@app.get("/api/calendar/events", response_model=List[CalendarEvent])
+def get_calendar_events(
+    start: str = Query(..., description="Start date in YYYY-MM-DD format"),
+    end: str = Query(..., description="End date in YYYY-MM-DD format"),
+):
+    from datetime import date as date_cls
+
+    try:
+        start_d = date_cls.fromisoformat(start.strip())
+        end_d = date_cls.fromisoformat(end.strip())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Dates must be formatted as YYYY-MM-DD.",
+        ) from exc
+
+    if start_d > end_d:
+        raise HTTPException(
+            status_code=400,
+            detail="Start date must not be after end date.",
+        )
+
+    try:
+        return list_calendar_events_from_db(start_d.isoformat(), end_d.isoformat())
+    except Exception as exc:
+        logger.exception("Failed to load calendar events")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to load calendar events. Please try again.",
         ) from exc
 
 
@@ -1354,14 +1529,31 @@ def get_latest_analysis():
 
 
 @app.post("/api/analyze", response_model=PersistedAnalysis)
-def analyze_inbox():
+def analyze_inbox(item_id: Optional[int] = Query(None)):
     run_id = None
     try:
         run_id = start_analysis_run()
-        notes = list_notes_from_db()
+        if item_id is not None:
+            single = get_note_from_db(item_id)
+            if not single:
+                raise HTTPException(
+                    status_code=404, detail="Item not found or not analyzable."
+                )
+            notes = [single]
+        else:
+            notes = list_notes_from_db()
         raw_result = analyze_inbox_with_openai(notes)
         result = validate_analysis_result(raw_result, notes)
-        return complete_analysis_run(run_id, result)
+        return complete_analysis_run(
+            run_id, result, merge_single=(item_id is not None)
+        )
+    except HTTPException:
+        if run_id is not None:
+            try:
+                fail_analysis_run(run_id)
+            except Exception:
+                logger.exception("Failed to mark analysis run as failed")
+        raise
     except Exception as exc:
         if run_id is not None:
             try:

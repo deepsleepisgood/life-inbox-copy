@@ -2,6 +2,10 @@
 
 Guidance for humans and coding agents working in this repository.
 
+## Operating Directives
+
+- Always read AGENTS.md before coding, and log every change and decision in decision.md as you make it.
+
 ## Startup
 
 ```bash

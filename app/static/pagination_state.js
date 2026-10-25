@@ -58,7 +58,9 @@
     if (!append) {
       resetForReload(state);
     }
-    const textNotes = rows.filter(item => item.item_type === 'text');
+    const textNotes = rows.filter(
+      item => Boolean(item && item.id)
+    );
     state.loadedItems = append
       ? state.loadedItems.concat(textNotes)
       : textNotes;

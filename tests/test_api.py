@@ -31,6 +31,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("LIFE_INBOX_AUTO_CREATE_TABLES", "1")
     monkeypatch.setenv("LIFE_INBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
 
     for module_name in (
         "app.main",
@@ -66,6 +67,25 @@ def test_home_page_loads(client):
     assert "text/html" in response.headers["content-type"]
     assert "<title>Life Inbox</title>" in response.text
     assert "Analyze Entire Inbox with AI" in response.text
+    assert 'href="/api/items/export.md" download>Export Markdown</a>' in response.text
+
+
+def test_failure_retry_center_entrypoint_uses_existing_failed_filter(client):
+    home = client.get("/")
+    app_js = client.get("/static/app.js")
+
+    assert home.status_code == 200
+    assert 'id="failureCenter"' in home.text
+    assert "Failure &amp; Retry Center" in home.text
+    assert 'onclick="showFailedItems()"' in home.text
+    assert 'id="rawSavedNotesHeading"' in home.text
+    assert app_js.status_code == 200
+    assert "function showFailedItems()" in app_js.text
+    assert "No failed items. Nothing needs a retry." in app_js.text
+    assert "const failedOnlyFilter =" in app_js.text
+    assert "updated.processing_status === 'ready' && failedOnlyFilter" in app_js.text
+    normalized_app_js = app_js.text.replace("\r\n", "\n")
+    assert "root.remove();\n            await loadNotes();" in normalized_app_js
 
 
 @pytest.mark.parametrize(
@@ -120,6 +140,76 @@ def test_create_and_list_canonical_text_item(client):
     }
     assert item["owner_user_id"] is not None
     assert client.get("/api/items").json() == [item]
+
+
+def test_markdown_export_download_includes_content_without_internal_fields(client):
+    created = client.post(
+        "/api/items",
+        json={"raw_text": "Shared note content"},
+    ).json()
+    database = sys.modules["app.database"]
+    with database.SessionLocal() as session:
+        item = session.get(database.InboxItemRecord, created["id"])
+        item.title = "Trip planning"
+        item.source_url = "https://example.test/article"
+        item.original_filename = "trip.pdf"
+        item.extracted_text = item.raw_text
+        item.ai_description = "An AI summary."
+        item.storage_path = "private/uploads/trip.pdf"
+        session.commit()
+
+    response = client.get("/api/items/export.md")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="life-inbox-export.md"'
+    )
+    assert "Trip planning" in response.text
+    assert "**Type:** text" in response.text
+    assert created["created_at"] in response.text
+    assert "https://example.test/article" in response.text
+    assert "trip.pdf" in response.text
+    assert response.text.count("Shared note content") == 1
+    assert "An AI summary." in response.text
+    assert "owner_user_id" not in response.text
+    assert "storage_path" not in response.text
+    assert "private/uploads/trip.pdf" not in response.text
+
+
+def test_markdown_export_includes_more_than_one_hundred_notes(client):
+    for index in range(105):
+        response = client.post(
+            "/api/items",
+            json={"raw_text": f"Export note {index}"},
+        )
+        assert response.status_code == 200
+
+    exported = client.get("/api/items/export.md")
+
+    assert exported.status_code == 200
+    assert exported.text.count("## Note ") == 105
+    assert "Export note 0" in exported.text
+    assert "Export note 104" in exported.text
+
+
+def test_markdown_export_is_scoped_to_current_user(client):
+    register(client, "export-alice@example.com", display_name="Alice")
+    client.post("/api/items", json={"raw_text": "Alice's private export note"})
+
+    register(client, "export-bob@example.com", display_name="Bob")
+    client.post("/api/items", json={"raw_text": "Bob's private export note"})
+    bob_export = client.get("/api/items/export.md")
+
+    assert bob_export.status_code == 200
+    assert "Bob's private export note" in bob_export.text
+    assert "Alice's private export note" not in bob_export.text
+
+    login(client, "export-alice@example.com")
+    alice_export = client.get("/api/items/export.md")
+
+    assert "Alice's private export note" in alice_export.text
+    assert "Bob's private export note" not in alice_export.text
 
 
 def test_item_search_is_case_insensitive_for_raw_text_and_title(client):
@@ -1317,9 +1407,106 @@ def test_failed_url_capture_can_retry(client, monkeypatch):
     assert first["processing_status"] == "failed"
     assert "503" in (first["error_message"] or "")
 
+    failed_items = client.get(
+        "/api/items",
+        params={"processing_status": "failed"},
+    ).json()
+    assert [item["id"] for item in failed_items] == [first["id"]]
+
     retry = client.post(f"/api/items/{first['id']}/retry").json()
     assert retry["processing_status"] == "ready"
     assert retry["title"] == "Recovered Article"
+
+    failed_items = client.get(
+        "/api/items",
+        params={"processing_status": "failed"},
+    ).json()
+    assert first["id"] not in {item["id"] for item in failed_items}
+
+
+def test_failed_item_filter_and_retry_are_owner_scoped(client, monkeypatch):
+    main = sys.modules["app.main"]
+    fetches = []
+
+    def fetch_url(url):
+        fetches.append(url)
+        if url.endswith("/failed"):
+            raise ValueError("Temporary upstream failure")
+        return {
+            "final_url": url,
+            "title": "Ready article",
+            "raw_text": "Ready article content",
+            "mime_type": "text/html",
+        }
+
+    monkeypatch.setattr(main, "fetch_url", fetch_url)
+    alice = register(client, "retry-alice@example.com")
+    alice_failed = client.post(
+        "/api/items/url",
+        json={"url": "https://example.com/failed"},
+    ).json()
+    alice_ready = client.post(
+        "/api/items/url",
+        json={"url": "https://example.com/ready"},
+    ).json()
+
+    register(client, "retry-bob@example.com")
+    bob_failed = client.post(
+        "/api/items/url",
+        json={"url": "https://example.com/failed"},
+    ).json()
+    fetch_count_before_foreign_retry = len(fetches)
+
+    forbidden_retry = client.post(f"/api/items/{alice_failed['id']}/retry")
+    assert forbidden_retry.status_code == 404
+    assert len(fetches) == fetch_count_before_foreign_retry
+
+    login(client, "retry-alice@example.com")
+    failed_items = client.get(
+        "/api/items",
+        params={"processing_status": "failed"},
+    ).json()
+
+    assert alice["id"] == alice_failed["owner_user_id"]
+    assert alice_ready["processing_status"] == "ready"
+    assert bob_failed["processing_status"] == "failed"
+    assert [item["id"] for item in failed_items] == [alice_failed["id"]]
+    assert failed_items[0]["error_message"] == "Temporary upstream failure"
+
+
+def test_retry_claim_is_atomic_and_rejects_an_active_retry(client, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    main = sys.modules["app.main"]
+    database = sys.modules["app.database"]
+    monkeypatch.setattr(
+        main,
+        "fetch_url",
+        lambda _url: (_ for _ in ()).throw(ValueError("Initial failure")),
+    )
+    failed = client.post(
+        "/api/items/url",
+        json={"url": "https://example.com/retry-claim"},
+    ).json()
+    owner_id = client.get("/api/auth/me").json()["id"]
+    claim_barrier = Barrier(2)
+
+    def claim_item():
+        database.set_current_owner_id(owner_id)
+        try:
+            claim_barrier.wait(timeout=5)
+            return database.claim_item_for_retry(failed["id"])
+        finally:
+            database.set_current_owner_id(None)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claims = list(executor.map(lambda _: claim_item(), range(2)))
+
+    assert sorted(claims) == [False, True]
+    assert client.get(f"/api/items/{failed['id']}").json()["processing_status"] == "processing"
+    active_retry = client.post(f"/api/items/{failed['id']}/retry")
+    assert active_retry.status_code == 409
 
 
 def test_analyze_includes_ready_url_items(client, monkeypatch):
@@ -1400,8 +1587,10 @@ def test_failed_pdf_capture_can_retry(client, monkeypatch):
     main = sys.modules["app.main"]
     attempts = {"count": 0}
     real_extract = main.extract_pdf_text
+    pdf_bytes = make_text_pdf()
 
     def flaky_extract(data, *, original_filename=None):
+        assert data == pdf_bytes
         attempts["count"] += 1
         if attempts["count"] == 1:
             raise ValueError("Temporary PDF parse failure")
@@ -1411,13 +1600,54 @@ def test_failed_pdf_capture_can_retry(client, monkeypatch):
 
     first = client.post(
         "/api/items/pdf",
-        files={"file": ("notes.pdf", make_text_pdf(), "application/pdf")},
+        files={"file": ("notes.pdf", pdf_bytes, "application/pdf")},
     ).json()
     assert first["processing_status"] == "failed"
     assert "parse failure" in (first["error_message"] or "").lower()
+    assert client.get(f"/api/items/{first['id']}/file").content == pdf_bytes
 
     retry = client.post(f"/api/items/{first['id']}/retry").json()
     assert retry["processing_status"] == "ready"
+    assert retry["id"] == first["id"]
+    assert retry["storage_path"] == first["storage_path"]
+    assert client.get(f"/api/items/{first['id']}/file").content == pdf_bytes
+
+
+def test_second_pdf_processing_failure_preserves_source_and_records_error(
+    client, monkeypatch
+):
+    from tests.pdf_fixtures import make_text_pdf
+
+    main = sys.modules["app.main"]
+    attempts = {"count": 0}
+    pdf_bytes = make_text_pdf()
+
+    def always_fail(data, *, original_filename=None):
+        assert data == pdf_bytes
+        attempts["count"] += 1
+        raise ValueError(f"Temporary parse failure on attempt {attempts['count']}")
+
+    monkeypatch.setattr(main, "extract_pdf_text", always_fail)
+    first = client.post(
+        "/api/items/pdf",
+        files={"file": ("source.pdf", pdf_bytes, "application/pdf")},
+    ).json()
+    saved_file_before_retry = client.get(
+        f"/api/items/{first['id']}/file"
+    ).content
+
+    retry = client.post(f"/api/items/{first['id']}/retry").json()
+
+    assert retry["processing_status"] == "failed"
+    assert retry["error_message"] == "Temporary parse failure on attempt 2"
+    assert retry["id"] == first["id"]
+    assert retry["original_filename"] == first["original_filename"] == "source.pdf"
+    assert retry["storage_path"] == first["storage_path"]
+    assert retry["raw_text"] == first["raw_text"]
+    assert retry["extracted_text"] == first["extracted_text"]
+    assert saved_file_before_retry == pdf_bytes
+    assert client.get(f"/api/items/{first['id']}/file").content == pdf_bytes
+    assert len(client.get("/api/items").json()) == 1
 
 
 def test_analyze_includes_ready_pdf_items(client):
@@ -1855,6 +2085,69 @@ def test_voice_transcript_flows_into_ask_retrieval(client, monkeypatch):
     assert "Atomic Habits" in data["answer"]
 
 
+def test_voice_nvidia_nim_pipeline_cleans_transcript(client, monkeypatch):
+    from types import SimpleNamespace
+    import openai
+    from tests.voice_fixtures import make_wav_bytes
+
+    wav = make_wav_bytes()
+
+    def fake_transcribe(**_kwargs):
+        return SimpleNamespace(
+            text="Um, uh, remember to call Dr. Aris, like, tomorrow morning"
+        )
+
+    def fake_chat_complete(**_kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="Remember to call Dr. Aris tomorrow morning."
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("LIFE_INBOX_DISABLE_TRANSCRIPTION", raising=False)
+    monkeypatch.setattr(
+        openai,
+        "OpenAI",
+        lambda *args, **kwargs: SimpleNamespace(
+            audio=SimpleNamespace(
+                transcriptions=SimpleNamespace(create=fake_transcribe)
+            ),
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=fake_chat_complete)
+            ),
+        ),
+    )
+
+    resp = client.post(
+        "/api/items/voice",
+        files={"file": ("memo.wav", wav, "audio/wav")},
+    )
+    assert resp.status_code == 200
+    item = resp.json()
+    assert item["item_type"] == "voice"
+    assert item["processing_status"] == "ready"
+    assert item["extracted_text"] == "Um, uh, remember to call Dr. Aris, like, tomorrow morning"
+    assert item["raw_text"] == "Remember to call Dr. Aris tomorrow morning."
+
+    # Verify voice item can be edited via PUT /api/notes/{id}
+    edited = client.put(
+        f"/api/notes/{item['id']}",
+        json={"text": "Remember to call Dr. Aris tomorrow afternoon."},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["text"] == "Remember to call Dr. Aris tomorrow afternoon."
+
+    # Verify voice item can be deleted
+    deleted = client.delete(f"/api/notes/{item['id']}")
+    assert deleted.status_code == 204
+
+
 def test_attention_board_buckets_and_briefing(client):
     client.post(
         "/api/items",
@@ -2031,3 +2324,58 @@ def test_health_includes_config_metadata(client):
     assert payload["status"] == "ok"
     assert "environment" in payload
     assert "database" in payload
+
+
+def test_single_note_analysis_and_dashboard_completion_exclusion(client, monkeypatch):
+    """Test targeted single-note analysis, cumulative merging, and completed items filtering."""
+    item1 = client.post(
+        "/api/items", json={"raw_text": "Doctor appointment Friday 3pm"}
+    ).json()
+    item2 = client.post(
+        "/api/items", json={"raw_text": "Buy groceries tomorrow"}
+    ).json()
+
+    # 1. Analyze single item 1
+    res1 = client.post(f"/api/analyze?item_id={item1['id']}")
+    assert res1.status_code == 200
+    data1 = res1.json()
+    assert any(b["name"] for b in data1["buckets"])
+
+    # 2. Analyze single item 2
+    res2 = client.post(f"/api/analyze?item_id={item2['id']}")
+    assert res2.status_code == 200
+    data2 = res2.json()
+    # Both notes should be present in cumulative analysis buckets
+    all_note_ids = {n["id"] for b in data2["buckets"] for n in b.get("notes", [])}
+    assert item1["id"] in all_note_ids
+    assert item2["id"] in all_note_ids
+
+    # 3. Check dashboard before completion
+    dash1 = client.get("/api/dashboard").json()
+    dash1_ids = {i["id"] for i in dash1.get("recently_captured", [])}
+    assert item1["id"] in dash1_ids
+    assert item2["id"] in dash1_ids
+
+    # 4. Complete item 1 via POST /api/items/{id}/complete
+    comp_res = client.post(f"/api/items/{item1['id']}/complete")
+    assert comp_res.status_code == 200
+
+    # 5. Dashboard must completely exclude completed item 1
+    dash2 = client.get("/api/dashboard").json()
+    recent_ids = {i["id"] for i in dash2.get("recently_captured", [])}
+    high_ids = {i["id"] for i in dash2.get("high_priority", [])}
+    needs_review_ids = {i["id"] for i in dash2.get("needs_review", [])}
+    assert item1["id"] not in recent_ids
+    assert item1["id"] not in high_ids
+    assert item1["id"] not in needs_review_ids
+    assert item2["id"] in recent_ids
+
+    # Latest analysis returned in dashboard must also exclude completed item 1
+    if dash2.get("analysis"):
+        active_analysis_ids = {
+            n["id"]
+            for b in dash2["analysis"].get("buckets", [])
+            for n in b.get("notes", [])
+        }
+        assert item1["id"] not in active_analysis_ids
+

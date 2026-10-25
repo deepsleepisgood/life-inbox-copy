@@ -6,6 +6,12 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
+import sys
+from dotenv import load_dotenv
+
+if "pytest" not in sys.modules and not os.getenv("PYTEST_CURRENT_TEST"):
+    load_dotenv()
+
 
 class ConfigError(RuntimeError):
     pass
@@ -26,6 +32,10 @@ class AppConfig:
     timezone: str
     email_provider: str  # console | fake (smtp/resend later)
     otp_pepper: str
+    nvidia_api_key: str
+    nvidia_base_url: str
+    nvidia_llm_model: str
+    nvidia_asr_model: str
 
     @property
     def is_sqlite(self) -> bool:
@@ -51,6 +61,21 @@ def load_config(*, strict: Optional[bool] = None) -> AppConfig:
         or "console"
     )
     otp_pepper = os.getenv("LIFE_INBOX_OTP_PEPPER", "").strip()
+    nvidia_api_key = os.getenv("NVIDIA_API_KEY", "").strip()
+    if nvidia_api_key and not nvidia_api_key.startswith("nvapi-") and not nvidia_api_key.startswith("Bearer "):
+        nvidia_api_key = f"nvapi-{nvidia_api_key}"
+    nvidia_base_url = (
+        os.getenv("NVIDIA_BASE_URL", "").strip()
+        or "https://integrate.api.nvidia.com/v1"
+    )
+    nvidia_llm_model = (
+        os.getenv("NVIDIA_LLM_MODEL", "").strip()
+        or "nvidia/nemotron-3.5-bolt-e4b"
+    )
+    nvidia_asr_model = (
+        os.getenv("NVIDIA_ASR_MODEL", "").strip()
+        or "openai/whisper-large-v3"
+    )
 
     if strict is None:
         strict = environment in {"beta", "production"}
@@ -102,11 +127,19 @@ def load_config(*, strict: Optional[bool] = None) -> AppConfig:
         timezone=timezone,
         email_provider=email_provider,
         otp_pepper=otp_pepper,
+        nvidia_api_key=nvidia_api_key,
+        nvidia_base_url=nvidia_base_url,
+        nvidia_llm_model=nvidia_llm_model,
+        nvidia_asr_model=nvidia_asr_model,
     )
 
 
 def config_warnings(config: AppConfig) -> list[str]:
     warnings: list[str] = []
+    if not config.nvidia_api_key:
+        warnings.append(
+            "NVIDIA_API_KEY is not configured; running in deterministic fallback mode."
+        )
     if config.is_sqlite and config.environment != "local":
         warnings.append("SQLite in use outside local environment.")
     if config.email_provider == "console":

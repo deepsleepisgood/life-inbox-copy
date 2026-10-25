@@ -30,18 +30,37 @@ class ParsedTiming:
     needs_confirmation: bool
     normalized_iso: Optional[str]
     note: Optional[str] = None
+    time_of_day: Optional[str] = None
 
 
 _ISO = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
 _MDY = re.compile(
     r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
     r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
-    r"dec(?:ember)?)\s+(\d{1,2})(?:,?\s*(20\d{2}))?\b",
+    r"dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(20\d{2}))?\b",
+    re.I,
+)
+_DMY = re.compile(
+    r"\b(\d{1,2})(?:st|nd|rd|th)?\s+"
+    r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)(?:,?\s*(20\d{2}))?\b",
+    re.I,
+)
+_MONTH_ONLY = re.compile(
+    r"\b(?:in|during|sometime in|by)?\s*"
+    r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)(?:\s+(20\d{2}))?\b",
     re.I,
 )
 _IN_DAYS = re.compile(r"\bin\s+(\d+)\s+days?\b", re.I)
 _WEEKDAY = re.compile(
     r"\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.I,
+)
+_TIME = re.compile(
+    r"\b((?:[01]?\d|2[0-3]):[0-5]\d(?:\s*(?:am|pm))?|(?:1[0-2]|0?[1-9])\s*(?:am|pm))\b",
     re.I,
 )
 
@@ -82,6 +101,13 @@ _WEEKDAYS = {
 }
 
 
+def extract_time_of_day(phrase: Optional[str]) -> Optional[str]:
+    if not phrase:
+        return None
+    match = _TIME.search(phrase)
+    return match.group(1).strip() if match else None
+
+
 def parse_timing_phrase(
     phrase: Optional[str],
     *,
@@ -100,6 +126,7 @@ def parse_timing_phrase(
 
     ref = reference or today_in_configured_tz()
     lower = original.lower()
+    time_of_day = extract_time_of_day(original)
 
     if "asap" in lower or "urgent" in lower:
         return ParsedTiming(
@@ -109,6 +136,7 @@ def parse_timing_phrase(
             needs_confirmation=True,
             normalized_iso=ref.isoformat(),
             note="Urgent/ASAP treated as today but needs confirmation.",
+            time_of_day=time_of_day,
         )
 
     if re.search(r"\btoday\b", lower):
@@ -118,6 +146,7 @@ def parse_timing_phrase(
             confidence="high",
             needs_confirmation=False,
             normalized_iso=ref.isoformat(),
+            time_of_day=time_of_day,
         )
 
     if re.search(r"\btomorrow\b", lower):
@@ -128,6 +157,7 @@ def parse_timing_phrase(
             confidence="high",
             needs_confirmation=False,
             normalized_iso=due.isoformat(),
+            time_of_day=time_of_day,
         )
 
     if "this weekend" in lower or "weekend" in lower:
@@ -141,6 +171,7 @@ def parse_timing_phrase(
             needs_confirmation=True,
             normalized_iso=due.isoformat(),
             note="Weekend normalized to Saturday; confirm if needed.",
+            time_of_day=time_of_day,
         )
 
     iso = _ISO.search(original)
@@ -152,6 +183,7 @@ def parse_timing_phrase(
             confidence="high",
             needs_confirmation=False,
             normalized_iso=due.isoformat(),
+            time_of_day=time_of_day,
         )
 
     in_days = _IN_DAYS.search(original)
@@ -163,6 +195,7 @@ def parse_timing_phrase(
             confidence="high",
             needs_confirmation=False,
             normalized_iso=due.isoformat(),
+            time_of_day=time_of_day,
         )
 
     mdy = _MDY.search(original)
@@ -180,6 +213,7 @@ def parse_timing_phrase(
                 needs_confirmation=True,
                 normalized_iso=None,
                 note="Could not parse calendar date.",
+                time_of_day=time_of_day,
             )
         if mdy.group(3) is None and due < ref:
             due = date(year + 1, month, day)
@@ -191,6 +225,37 @@ def parse_timing_phrase(
             needs_confirmation=confidence != "high",
             normalized_iso=due.isoformat(),
             note=None if confidence == "high" else "Year inferred; confirm.",
+            time_of_day=time_of_day,
+        )
+
+    dmy = _DMY.search(original)
+    if dmy:
+        day = int(dmy.group(1))
+        month = _MONTHS[dmy.group(2).lower()]
+        year = int(dmy.group(3)) if dmy.group(3) else ref.year
+        try:
+            due = date(year, month, day)
+        except ValueError:
+            return ParsedTiming(
+                original_phrase=original,
+                due_date=None,
+                confidence="low",
+                needs_confirmation=True,
+                normalized_iso=None,
+                note="Could not parse calendar date.",
+                time_of_day=time_of_day,
+            )
+        if dmy.group(3) is None and due < ref:
+            due = date(year + 1, month, day)
+        confidence = "high" if dmy.group(3) else "medium"
+        return ParsedTiming(
+            original_phrase=original,
+            due_date=due,
+            confidence=confidence,
+            needs_confirmation=confidence != "high",
+            normalized_iso=due.isoformat(),
+            note=None if confidence == "high" else "Year inferred; confirm.",
+            time_of_day=time_of_day,
         )
 
     weekday = _WEEKDAY.search(original)
@@ -209,6 +274,24 @@ def parse_timing_phrase(
             needs_confirmation=True,
             normalized_iso=due.isoformat(),
             note="Weekday timing is ambiguous; confirm the intended date.",
+            time_of_day=time_of_day,
+        )
+
+    month_only = _MONTH_ONLY.search(original)
+    if month_only:
+        month = _MONTHS[month_only.group(1).lower()]
+        year = int(month_only.group(2)) if month_only.group(2) else ref.year
+        if month_only.group(2) is None and (year < ref.year or (year == ref.year and month < ref.month)):
+            year += 1
+        due = date(year, month, 1)
+        return ParsedTiming(
+            original_phrase=original,
+            due_date=due,
+            confidence="low",
+            needs_confirmation=True,
+            normalized_iso=due.isoformat(),
+            note="Month only; normalized to the 1st of the month. Needs confirmation.",
+            time_of_day=time_of_day,
         )
 
     return ParsedTiming(
@@ -218,6 +301,7 @@ def parse_timing_phrase(
         needs_confirmation=True,
         normalized_iso=None,
         note="Could not confidently normalize this timing phrase.",
+        time_of_day=time_of_day,
     )
 
 

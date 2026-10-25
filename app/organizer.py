@@ -6,7 +6,14 @@ import re
 from app.schemas import AnalysisResult
 
 
-MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+NVIDIA_BASE_URL = os.getenv(
+    "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
+)
+MODEL = (
+    os.getenv("NVIDIA_LLM_MODEL")
+    or os.getenv("OPENAI_MODEL")
+    or "nvidia/nemotron-3.5-bolt-e4b"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -89,15 +96,21 @@ def _extract_timing(text: str) -> str | None:
     ):
         if phrase in lowered:
             return phrase
+    from app.attention.dates import parse_timing_phrase
+
+    parsed = parse_timing_phrase(text)
+    if parsed.due_date is not None:
+        return text
     return None
 
 
 def _split_action_tasks(text: str, note_id: int, priority: str) -> list[dict]:
-    """One source may yield multiple durable tasks when sentences look actionable."""
+    """One source may yield multiple durable tasks when sentences look actionable or contain dates."""
     action_markers = [
         "call", "buy", "send", "ask", "finish", "submit", "pay", "book",
         "pick up", "prepare", "renew", "follow up", "need to", "remember to",
-        "research", "look into", "order",
+        "research", "look into", "order", "appointment", "dentist", "doctor",
+        "meeting", "flight", "visit", "schedule",
     ]
     chunks = [
         part.strip()
@@ -105,25 +118,32 @@ def _split_action_tasks(text: str, note_id: int, priority: str) -> list[dict]:
         if part and part.strip()
     ]
     todos = []
+    from app.attention.dates import parse_timing_phrase
+
     for chunk in chunks:
-        if any(marker in chunk.lower() for marker in action_markers):
+        timing = _extract_timing(chunk) or _extract_timing(text)
+        is_action = any(marker in chunk.lower() for marker in action_markers)
+        has_date = parse_timing_phrase(chunk).due_date is not None
+        if is_action or has_date:
             todos.append(
                 {
                     "task": chunk,
                     "priority": priority_for_text(chunk),
                     "source_note_ids": [note_id],
-                    "when": _extract_timing(chunk) or _extract_timing(text),
+                    "when": timing or (chunk if has_date else None),
                 }
             )
-    if not todos and any(marker in text.lower() for marker in action_markers):
-        todos.append(
-            {
-                "task": text,
-                "priority": priority,
-                "source_note_ids": [note_id],
-                "when": _extract_timing(text),
-            }
-        )
+    if not todos:
+        has_text_date = parse_timing_phrase(text).due_date is not None
+        if any(marker in text.lower() for marker in action_markers) or has_text_date:
+            todos.append(
+                {
+                    "task": text,
+                    "priority": priority,
+                    "source_note_ids": [note_id],
+                    "when": _extract_timing(text) or (text if has_text_date else None),
+                }
+            )
     return todos
 
 
@@ -171,7 +191,7 @@ def validate_analysis_result(result: dict, notes: list[dict]) -> dict:
     return validated.model_dump()
 
 
-def analyze_inbox_with_openai(notes: list[dict]) -> dict:
+def analyze_inbox_with_nvidia(notes: list[dict]) -> dict:
     if not notes:
         return validate_analysis_result(
             {
@@ -183,12 +203,23 @@ def analyze_inbox_with_openai(notes: list[dict]) -> dict:
             notes,
         )
 
-    if not os.getenv("OPENAI_API_KEY"):
+    api_key = os.getenv("NVIDIA_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not api_key:
         return validate_analysis_result(fallback_analyze(notes), notes)
 
     try:
         from openai import OpenAI
-        client = OpenAI()
+
+        base_url = os.getenv(
+            "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
+        )
+        try:
+            client = OpenAI(base_url=base_url, api_key=api_key)
+        except TypeError:
+            try:
+                client = OpenAI(api_key=api_key)
+            except TypeError:
+                client = OpenAI()
 
         compact_notes = [{"id": n["id"], "text": n["text"]} for n in notes]
 
@@ -253,13 +284,38 @@ Saved notes:
 {json.dumps(compact_notes, ensure_ascii=False)}
 """
 
-        response = client.responses.create(model=MODEL, input=prompt)
-        result = extract_json_object(response.output_text)
-        result["mode"] = "openai"
+        model_name = (
+            os.getenv("NVIDIA_LLM_MODEL")
+            or os.getenv("OPENAI_MODEL")
+            or MODEL
+        )
+        if hasattr(client, "chat") and hasattr(client.chat, "completions"):
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+            output_text = getattr(response.choices[0].message, "content", "") or ""
+        elif hasattr(client, "responses"):
+            response = client.responses.create(
+                model=model_name,
+                prompt=prompt,
+                temperature=0.2,
+            )
+            output_text = getattr(response, "output_text", "")
+        else:
+            output_text = ""
+
+        result = extract_json_object(output_text)
+        mode = "nvidia_nim" if os.getenv("NVIDIA_API_KEY") else "openai"
+        result["mode"] = mode
         return validate_analysis_result(result, notes)
 
     except Exception:
-        logger.exception("OpenAI analysis failed; using deterministic fallback")
+        logger.exception("NVIDIA NIM analysis failed; using deterministic fallback")
         fallback = fallback_analyze(notes)
         fallback["mode"] = "fallback_after_api_error"
         return validate_analysis_result(fallback, notes)
+
+
+analyze_inbox_with_openai = analyze_inbox_with_nvidia

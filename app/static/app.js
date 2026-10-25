@@ -2,6 +2,81 @@ let isSavingNote = false;
 let isAnalyzingInbox = false;
 const pendingNoteActions = new Set();
 const pendingTaskActions = new Set();
+const completedNoteIdsCache = new Set();
+const analysisQueue = [];
+
+async function getCompletedNoteIds() {
+  try {
+    const completedTasks = await fetchJson(
+      '/api/tasks?status=completed',
+      undefined,
+      'Unable to load completed tasks.'
+    );
+    for (const t of completedTasks) {
+      if (t.source_item_ids) {
+        t.source_item_ids.forEach(id => completedNoteIdsCache.add(id));
+      }
+    }
+    return completedNoteIdsCache;
+  } catch {
+    return completedNoteIdsCache;
+  }
+}
+
+async function processAnalysisQueue() {
+  if (isAnalyzingInbox) return;
+  isAnalyzingInbox = true;
+  setButtonBusy(
+    'analyzeButton',
+    true,
+    'Analyzing…',
+    'Analyze Entire Inbox with AI'
+  );
+
+  while (analysisQueue.length > 0) {
+    const itemId = analysisQueue.shift();
+    setStatus(
+      'analysisStatus',
+      itemId ? 'Categorizing note with AI…' : 'Analyzing saved notes…'
+    );
+    try {
+      const url = itemId ? `/api/analyze?item_id=${itemId}` : '/api/analyze';
+      const data = await fetchJson(
+        url,
+        {method: 'POST'},
+        'Unable to analyze inbox.'
+      );
+      populateCategoryFilter(data);
+      renderAnalysis(data);
+      await loadTasks();
+      await loadTopics();
+      await loadDashboard();
+      await loadAttention();
+      await loadCalendarEvents();
+      setStatus('analysisStatus', 'Analysis complete.');
+    } catch {
+      setStatus(
+        'analysisStatus',
+        'We could not analyze your note. Please try again.',
+        true
+      );
+    }
+  }
+
+  isAnalyzingInbox = false;
+  setButtonBusy(
+    'analyzeButton',
+    false,
+    'Analyzing…',
+    'Analyze Entire Inbox with AI'
+  );
+}
+
+function autoAnalyzeInbox(itemId = null) {
+  analysisQueue.push(itemId);
+  processAnalysisQueue();
+}
+
 const itemFilterFields = {
   q: 'itemSearch',
   item_type: 'itemTypeFilter',
@@ -124,6 +199,16 @@ function clearItemFilters() {
   loadNotes();
 }
 
+function showFailedItems() {
+  document.getElementById('processingStatusFilter').value = 'failed';
+  updateUrl({processing_status: 'failed'});
+  document.getElementById('rawSavedNotesHeading').scrollIntoView({
+    behavior: 'smooth',
+    block: 'start'
+  });
+  loadNotes();
+}
+
 function changeTaskStatusFilter() {
   const status = document.getElementById('taskStatusFilter').value;
   updateUrl({task_status: status});
@@ -175,7 +260,7 @@ async function addNote() {
   setStatus('noteStatus', 'Saving your note…');
 
   try {
-    await fetchJson(
+    const createdItem = await fetchJson(
       '/api/items',
       {
         method: 'POST',
@@ -193,6 +278,9 @@ async function addNote() {
       'Your note was saved, but the list could not refresh. Reload to try again.'
     );
     await loadLatestAnalysis();
+    if (createdItem && createdItem.id) {
+      autoAnalyzeInbox(createdItem.id);
+    }
   } catch {
     setStatus(
       'noteStatus',
@@ -234,6 +322,9 @@ async function addPdf() {
     await loadNotes();
     await loadLatestAnalysis();
     await loadDashboard();
+    if (item && item.id) {
+      autoAnalyzeInbox(item.id);
+    }
   } catch {
     setStatus('noteStatus', 'We could not upload that PDF.', true);
   } finally {
@@ -270,6 +361,9 @@ async function addImage() {
     await loadNotes();
     await loadLatestAnalysis();
     await loadDashboard();
+    if (item && item.id) {
+      autoAnalyzeInbox(item.id);
+    }
   } catch {
     setStatus('noteStatus', 'We could not upload that image.', true);
   } finally {
@@ -280,6 +374,62 @@ async function addImage() {
 let voiceRecorder = null;
 let voiceChunks = [];
 let voiceStream = null;
+
+let micState = 'idle'; // 'idle' | 'recording' | 'processing' | 'error'
+let recordingTimerInterval = null;
+let recordingStartTime = 0;
+
+function setMicState(state, message = '', isError = false) {
+  micState = state;
+  const btn = document.getElementById('micVoiceButton');
+  const icon = document.getElementById('micIcon');
+  const pulse = document.getElementById('micPulse');
+  const timer = document.getElementById('micTimer');
+  const spinner = document.getElementById('micSpinner');
+  const label = document.getElementById('micLabel');
+  const status = document.getElementById('micVoiceStatus');
+
+  if (btn) {
+    btn.className = `mic-button ${state}`;
+    if (state === 'idle') {
+      btn.disabled = false;
+      if (icon) { icon.style.display = 'inline'; icon.textContent = '🎙️'; }
+      if (pulse) pulse.style.display = 'none';
+      if (timer) timer.style.display = 'none';
+      if (spinner) spinner.style.display = 'none';
+      if (label) label.textContent = 'Record note';
+    } else if (state === 'recording') {
+      btn.disabled = false;
+      if (icon) { icon.style.display = 'inline'; icon.textContent = '⏹️'; }
+      if (pulse) pulse.style.display = 'inline-block';
+      if (timer) { timer.style.display = 'inline'; timer.textContent = '00:00'; }
+      if (spinner) spinner.style.display = 'none';
+      if (label) label.textContent = 'Stop';
+    } else if (state === 'processing') {
+      btn.disabled = true;
+      if (icon) icon.style.display = 'none';
+      if (pulse) pulse.style.display = 'none';
+      if (timer) timer.style.display = 'none';
+      if (spinner) spinner.style.display = 'inline-block';
+      if (label) label.textContent = 'Transcribing…';
+    } else if (state === 'error') {
+      btn.disabled = false;
+      if (icon) { icon.style.display = 'inline'; icon.textContent = '⚠️'; }
+      if (pulse) pulse.style.display = 'none';
+      if (timer) timer.style.display = 'none';
+      if (spinner) spinner.style.display = 'none';
+      if (label) label.textContent = 'Retry mic';
+    }
+  }
+
+  if (status) {
+    status.textContent = message;
+    status.classList.toggle('error', isError);
+  }
+}
+
+let speechRecognizer = null;
+let speechTranscript = '';
 
 async function addVoice() {
   const input = document.getElementById('voiceFile');
@@ -293,11 +443,15 @@ async function addVoice() {
   input.value = '';
 }
 
-async function uploadVoiceFile(file, statusMessage) {
+async function uploadVoiceFile(file, statusMessage, transcript = '') {
   setButtonBusy('addVoiceButton', true, 'Uploading…', 'Upload audio');
+  setMicState('processing', 'Transcribing and cleaning transcript with NVIDIA NIM…');
   setStatus('noteStatus', statusMessage);
   const formData = new FormData();
   formData.append('file', file, file.name || 'voice-note.webm');
+  if (transcript) {
+    formData.append('transcript', transcript);
+  }
   try {
     const item = await fetchJson(
       '/api/items/voice',
@@ -313,12 +467,17 @@ async function uploadVoiceFile(file, statusMessage) {
         : `Voice note saved but processing failed: ${item.error_message || 'unknown error'}`,
       item.processing_status !== 'ready'
     );
+    setMicState('idle', 'Voice note saved and transcribed.');
     setStatus('voiceStatus', '');
     await loadNotes();
     await loadLatestAnalysis();
     await loadDashboard();
+    if (item && item.id) {
+      autoAnalyzeInbox(item.id);
+    }
   } catch {
     setStatus('noteStatus', 'We could not upload that voice note.', true);
+    setMicState('error', 'Voice processing failed. Please try again.', true);
   } finally {
     setButtonBusy('addVoiceButton', false, 'Uploading…', 'Upload audio');
   }
@@ -326,51 +485,132 @@ async function uploadVoiceFile(file, statusMessage) {
 
 async function toggleVoiceRecording() {
   if (voiceRecorder && voiceRecorder.state === 'recording') {
+    if (recordingTimerInterval) {
+      clearInterval(recordingTimerInterval);
+      recordingTimerInterval = null;
+    }
+    if (speechRecognizer) {
+      try { speechRecognizer.stop(); } catch {}
+    }
     voiceRecorder.stop();
     setButtonBusy('recordVoiceButton', false, 'Recording…', 'Record');
-    setStatus('voiceStatus', 'Processing recording…');
+    setMicState('processing', 'Transcribing…');
     return;
   }
 
+  if (micState === 'processing') return;
+
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    setStatus('voiceStatus', 'Browser recording is not available here. Upload an audio file instead.', true);
+    const msg = 'Browser recording is not available in this browser. Upload an audio file instead.';
+    setMicState('error', msg, true);
+    setStatus('voiceStatus', msg, true);
     return;
   }
 
   try {
     voiceStream = await navigator.mediaDevices.getUserMedia({audio: true});
     voiceChunks = [];
-    voiceRecorder = new MediaRecorder(voiceStream);
+
+    let mimeType = 'audio/webm;codecs=opus';
+    if (typeof MediaRecorder.isTypeSupported === 'function') {
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : (MediaRecorder.isTypeSupported('audio/wav') ? 'audio/wav' : '');
+      }
+    } else {
+      mimeType = '';
+    }
+
+    voiceRecorder = mimeType
+      ? new MediaRecorder(voiceStream, {mimeType})
+      : new MediaRecorder(voiceStream);
+
     voiceRecorder.addEventListener('dataavailable', event => {
       if (event.data && event.data.size > 0) voiceChunks.push(event.data);
     });
+
+    // Start speech recognition in tandem if browser supports it
+    speechTranscript = '';
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      try {
+        const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+        speechRecognizer = new SpeechRec();
+        speechRecognizer.continuous = true;
+        speechRecognizer.interimResults = true;
+        speechRecognizer.lang = 'en-US';
+        speechRecognizer.onresult = (event) => {
+          let text = '';
+          for (let i = 0; i < event.results.length; ++i) {
+            text += event.results[i][0].transcript + ' ';
+          }
+          if (text) speechTranscript = text.trim();
+        };
+        speechRecognizer.start();
+      } catch (e) {
+        console.debug('Speech recognition init info:', e);
+      }
+    }
+
     voiceRecorder.addEventListener('stop', async () => {
+      if (recordingTimerInterval) {
+        clearInterval(recordingTimerInterval);
+        recordingTimerInterval = null;
+      }
+      if (speechRecognizer) {
+        try { speechRecognizer.stop(); } catch {}
+      }
       if (voiceStream) {
         voiceStream.getTracks().forEach(track => track.stop());
         voiceStream = null;
       }
-      const blob = new Blob(voiceChunks, {type: voiceRecorder.mimeType || 'audio/webm'});
+      const actualType = (voiceRecorder && voiceRecorder.mimeType) || mimeType || 'audio/webm';
+      const blob = new Blob(voiceChunks, {type: actualType});
       voiceRecorder = null;
       if (!blob.size) {
+        setMicState('error', 'Recording was empty. Check microphone.', true);
         setStatus('voiceStatus', 'Recording was empty.', true);
         return;
       }
-      const file = new File([blob], `recording-${Date.now()}.webm`, {
-        type: blob.type || 'audio/webm'
+      const ext = actualType.includes('wav') ? 'wav' : 'webm';
+      const file = new File([blob], `voice-recording-${Date.now()}.${ext}`, {
+        type: actualType
       });
-      await uploadVoiceFile(file, 'Saving recorded voice note…');
+      const capturedSpeech = speechTranscript;
+      speechTranscript = '';
+      await uploadVoiceFile(file, 'Saving recorded voice note…', capturedSpeech);
     });
-    voiceRecorder.start();
-    setButtonBusy('recordVoiceButton', true, 'Stop', 'Record');
-    document.getElementById('recordVoiceButton').textContent = 'Stop';
-    document.getElementById('recordVoiceButton').disabled = false;
-    setStatus('voiceStatus', 'Recording… click Stop when finished.');
-  } catch {
-    setStatus(
-      'voiceStatus',
-      'Could not access the microphone. You can still upload an audio file.',
-      true
-    );
+
+    voiceRecorder.start(250);
+    recordingStartTime = Date.now();
+    if (recordingTimerInterval) clearInterval(recordingTimerInterval);
+    recordingTimerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+      const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const s = String(elapsed % 60).padStart(2, '0');
+      const timerEl = document.getElementById('micTimer');
+      if (timerEl) timerEl.textContent = `${m}:${s}`;
+    }, 500);
+
+    setMicState('recording', 'Recording… click Stop when finished.');
+    const recordBtn = document.getElementById('recordVoiceButton');
+    if (recordBtn) {
+      recordBtn.textContent = 'Stop';
+      recordBtn.disabled = false;
+    }
+  } catch (err) {
+    if (recordingTimerInterval) {
+      clearInterval(recordingTimerInterval);
+      recordingTimerInterval = null;
+    }
+    const isDenied =
+      err &&
+      (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError');
+    const msg = isDenied
+      ? 'Microphone permission denied. Allow mic access in browser settings.'
+      : 'Could not access the microphone. Check device permissions.';
+    setMicState('error', msg, true);
+    setStatus('voiceStatus', msg, true);
   }
 }
 
@@ -405,6 +645,9 @@ async function addUrl() {
     await loadNotes();
     await loadLatestAnalysis();
     await loadDashboard();
+    if (item && item.id) {
+      autoAnalyzeInbox(item.id);
+    }
   } catch {
     setStatus('noteStatus', 'We could not save that URL.', true);
   } finally {
@@ -473,6 +716,7 @@ function renderNote(note) {
   } else if (note.item_type === 'voice') {
     const title = note.title || note.original_filename || 'Voice note';
     const transcript = note.extracted_text || '';
+    const cleaned = note.raw_text || '';
     const player = note.storage_path
       ? `<audio controls preload="none" src="/api/items/${note.id}/file"></audio>`
       : '';
@@ -480,7 +724,8 @@ function renderNote(note) {
       `<strong>${esc(title)}</strong>`,
       `<div class="muted">${esc(note.original_filename || '')}</div>`,
       player,
-      `<div class="provenance"><span class="label">Transcript (extracted)</span>: ${transcript ? esc(transcript.slice(0, 320)) + (transcript.length > 320 ? '…' : '') : '<em class="muted">none yet — edit to add</em>'}</div>`
+      cleaned ? `<div class="voice-cleaned-text">${esc(cleaned)}</div>` : '',
+      `<div class="provenance"><span class="label">Raw transcript</span>: ${transcript ? esc(transcript.slice(0, 320)) + (transcript.length > 320 ? '…' : '') : '<em class="muted">none yet — edit to add</em>'}</div>`
     ].join('');
   } else {
     text.textContent = note.raw_text;
@@ -515,7 +760,14 @@ function renderNote(note) {
             {method: 'POST'},
             'Unable to retry capture processing.'
           );
-          root.replaceWith(renderNote(updated));
+          const failedOnlyFilter =
+            document.getElementById('processingStatusFilter').value === 'failed';
+          if (updated.processing_status === 'ready' && failedOnlyFilter) {
+            root.remove();
+            await loadNotes();
+          } else {
+            root.replaceWith(renderNote(updated));
+          }
           const label = captureTypeLabel(note.item_type);
           setStatus(
             'noteStatus',
@@ -539,6 +791,13 @@ function renderNote(note) {
     (note.item_type === 'image' || note.item_type === 'voice') &&
     note.processing_status === 'ready'
   ) {
+    if (note.item_type === 'voice') {
+      actions.append(
+        actionButton('Edit note', 'secondary', () => {
+          showEditNote(note, root);
+        })
+      );
+    }
     actions.append(
       actionButton(
         note.item_type === 'voice' ? 'Edit transcript' : 'Edit OCR text',
@@ -566,6 +825,37 @@ function renderNote(note) {
       })
     );
   }
+
+  const completeButton = actionButton('✓ Complete', 'complete-btn', async () => {
+    if (pendingNoteActions.has(note.id)) return;
+    pendingNoteActions.add(note.id);
+    completeButton.disabled = true;
+    setStatus('noteStatus', 'Completing note…');
+    try {
+      await fetchJson(
+        `/api/items/${note.id}/complete`,
+        {method: 'POST'},
+        'Unable to complete note.'
+      );
+      completedNoteIdsCache.add(note.id);
+      LifeInboxPagination.afterLoadedNoteDeleted(itemPagination, note.id);
+      root.style.transition = 'all 0.3s ease';
+      root.style.opacity = '0';
+      root.style.transform = 'scale(0.95)';
+      setTimeout(() => root.remove(), 300);
+      setStatus('noteStatus', 'Note completed and removed from active inbox.');
+      await loadTasks();
+      await loadDashboard();
+      await loadAttention();
+      await loadCalendarEvents();
+    } catch {
+      setStatus('noteStatus', 'Could not complete note.', true);
+      completeButton.disabled = false;
+    } finally {
+      pendingNoteActions.delete(note.id);
+    }
+  });
+  actions.prepend(completeButton);
 
   root.append(text, time, actions);
   return root;
@@ -609,6 +899,8 @@ function showEditExtractedText(note, root) {
       root.replaceWith(renderNote(updated));
       setStatus('noteStatus', isVoice ? 'Transcript updated.' : 'Extracted text updated.');
       await loadLatestAnalysis();
+      autoAnalyzeInbox(note.id);
+      await loadCalendarEvents();
     } catch {
       setStatus('noteStatus', 'Could not update extracted text.', true);
       saveButton.disabled = false;
@@ -668,6 +960,8 @@ function showEditNote(note, root) {
       root.replaceWith(renderNote(updatedNote));
       setStatus('noteStatus', 'Note updated.');
       await loadLatestAnalysis();
+      autoAnalyzeInbox(note.id);
+      await loadCalendarEvents();
     } catch {
       setStatus(
         'noteStatus',
@@ -720,6 +1014,8 @@ async function deleteExistingNote(note, root, editButton, deleteButton) {
     setStatus('noteStatus', 'Note deleted.');
     await loadLatestAnalysis();
     await loadTasks();
+    await loadAttention();
+    await loadCalendarEvents();
   } catch {
     setStatus(
       'noteStatus',
@@ -811,6 +1107,7 @@ function renderTask(task) {
             await loadTasks();
             await loadDashboard();
             await loadAttention();
+            await loadCalendarEvents();
           } catch {
             setStatus('taskStatus', 'Could not confirm timing.', true);
           }
@@ -840,29 +1137,58 @@ async function transitionTask(taskId, action, actions) {
   if (pendingTaskActions.has(taskId)) return;
 
   pendingTaskActions.add(taskId);
-  const buttons = actions.querySelectorAll('button');
+  const buttons = actions ? actions.querySelectorAll('button') : [];
   buttons.forEach(button => {
     button.disabled = true;
   });
   setStatus('taskStatus', 'Updating task…');
+  setStatus('inAppCalendarStatus', 'Updating task…');
 
   try {
-    await fetchJson(
+    const updated = await fetchJson(
       `/api/tasks/${taskId}/${action}`,
       {method: 'POST'},
       'Unable to update task.'
     );
+    if (action === 'complete' && updated.source_item_ids) {
+      updated.source_item_ids.forEach(itemId => {
+        completedNoteIdsCache.add(itemId);
+        LifeInboxPagination.afterLoadedNoteDeleted(itemPagination, itemId);
+        const noteEl = document.querySelector(`.note[data-note-id="${itemId}"]`);
+        if (noteEl) {
+          noteEl.style.transition = 'all 0.3s ease';
+          noteEl.style.opacity = '0';
+          noteEl.style.transform = 'scale(0.95)';
+          setTimeout(() => noteEl.remove(), 300);
+        }
+      });
+      await loadNotes();
+    }
+    if (action === 'reopen' && updated.source_item_ids) {
+      updated.source_item_ids.forEach(itemId => {
+        completedNoteIdsCache.delete(itemId);
+      });
+      await loadNotes();
+    }
     const messages = {
-      complete: 'Task completed.',
+      complete: 'Task completed. Associated notes removed.',
       dismiss: 'Task dismissed.',
       reopen: 'Task reopened.'
     };
     setStatus('taskStatus', messages[action]);
+    setStatus('inAppCalendarStatus', messages[action]);
     await loadTasks();
     await loadAttention();
+    await loadDashboard();
+    await loadCalendarEvents();
   } catch {
     setStatus(
       'taskStatus',
+      'We could not update this task. Please try again.',
+      true
+    );
+    setStatus(
+      'inAppCalendarStatus',
       'We could not update this task. Please try again.',
       true
     );
@@ -913,30 +1239,40 @@ function renderAnalysis(data) {
     ? `<div class="banner warn" role="status">Analysis is stale — inbox items changed since this run. Re-analyze to refresh.</div>`
     : '';
 
-  const bucketHtml = (data.buckets || []).map(bucket => `
-    <div class="panel">
-      <h3>${esc(bucket.name)}</h3>
-      <ul>
-        ${(bucket.notes || []).map(n =>
-          `<li>${esc(n.title)} <span class="pill">${esc(n.priority)}</span></li>`
-        ).join('')}
-      </ul>
-    </div>
-  `).join('');
+  const bucketHtml = (data.buckets || []).map(bucket => {
+    const activeNotes = (bucket.notes || []).filter(n => !completedNoteIdsCache.has(n.id));
+    if (!activeNotes.length) return '';
+    return `
+      <div class="panel">
+        <h3>${esc(bucket.name)}</h3>
+        <ul>
+          ${activeNotes.map(n =>
+            `<li>${esc(n.title)} <span class="pill">${esc(n.priority)}</span></li>`
+          ).join('')}
+        </ul>
+      </div>
+    `;
+  }).join('');
 
-  const todoHtml = (data.todos || []).map(t =>
+  const todoHtml = (data.todos || []).filter(t => {
+    const sources = t.source_note_ids || [];
+    return !sources.some(id => completedNoteIdsCache.has(id));
+  }).map(t =>
     `<li><strong>${esc(t.task)}</strong> <span class="pill">${esc(t.priority)}</span>${t.when ? ` · ${esc(t.when)}` : ''}</li>`
   ).join('');
 
   const pv = data.priority_view || {High: [], Medium: [], Low: []};
-  const priorityHtml = ['High', 'Medium', 'Low'].map(level => `
-    <div class="panel">
-      <h3>${level} priority (${(pv[level] || []).length})</h3>
-      <ul>
-        ${(pv[level] || []).map(n => `<li>${esc(n.title)}</li>`).join('') || '<li class="muted">None</li>'}
-      </ul>
-    </div>
-  `).join('');
+  const priorityHtml = ['High', 'Medium', 'Low'].map(level => {
+    const activeNotes = (pv[level] || []).filter(n => !completedNoteIdsCache.has(n.id));
+    return `
+      <div class="panel">
+        <h3>${level} priority (${activeNotes.length})</h3>
+        <ul>
+          ${activeNotes.map(n => `<li>${esc(n.title)}</li>`).join('') || '<li class="muted">None</li>'}
+        </ul>
+      </div>
+    `;
+  }).join('');
 
   root.innerHTML = `
     ${staleBanner}
@@ -957,6 +1293,7 @@ function renderAnalysis(data) {
 
 async function loadLatestAnalysis() {
   try {
+    await getCompletedNoteIds();
     const data = await fetchJson(
       '/api/analyze/latest',
       undefined,
@@ -983,45 +1320,9 @@ async function loadLatestAnalysis() {
   }
 }
 
-async function analyzeInbox() {
-  if (isAnalyzingInbox) return;
-
-  isAnalyzingInbox = true;
-  setButtonBusy(
-    'analyzeButton',
-    true,
-    'Analyzing…',
-    'Analyze Entire Inbox with AI'
-  );
-  setStatus('analysisStatus', 'Analyzing your saved notes…');
-
-  try {
-    const data = await fetchJson(
-      '/api/analyze',
-      {method: 'POST'},
-      'Unable to analyze inbox.'
-    );
-    populateCategoryFilter(data);
-    renderAnalysis(data);
-    await loadTasks();
-    await loadTopics();
-    await loadDashboard();
-    setStatus('analysisStatus', 'Analysis complete.');
-  } catch {
-    setStatus(
-      'analysisStatus',
-      'We could not analyze your inbox. Your notes are still here—please try again.',
-      true
-    );
-  } finally {
-    isAnalyzingInbox = false;
-    setButtonBusy(
-      'analyzeButton',
-      false,
-      'Analyzing…',
-      'Analyze Entire Inbox with AI'
-    );
-  }
+async function analyzeInbox(itemId = null) {
+  analysisQueue.push(itemId);
+  return processAnalysisQueue();
 }
 
 const itemPagination = LifeInboxPagination.createState(
@@ -1070,6 +1371,17 @@ async function loadNotes(
   const filtered = [...params.keys()].some(
     key => key !== 'limit' && key !== 'offset' && params.get(key)
   );
+  const failureCenterFilter = params.get('processing_status') === 'failed';
+  const hasAdditionalFilters = [...params.keys()].some(
+    key => !['limit', 'offset', 'processing_status'].includes(key) && params.get(key)
+  );
+  const emptyMessage = failureCenterFilter
+    ? hasAdditionalFilters
+      ? 'No failed items match these filters.'
+      : 'No failed items. Nothing needs a retry.'
+    : filtered
+      ? 'No inbox items match these filters.'
+      : 'No saved notes yet. Capture a thought above to get started.';
   const query = params.toString();
 
   if (append) {
@@ -1091,12 +1403,10 @@ async function loadNotes(
     }
 
     if (!append && !notes.length) {
-      root.innerHTML = filtered
-        ? '<div class="panel muted">No inbox items match these filters.</div>'
-        : '<div class="panel muted">No saved notes yet. Capture a thought above to get started.</div>';
+      root.innerHTML = `<div class="panel muted">${emptyMessage}</div>`;
       setStatus(
         'searchStatus',
-        filtered ? 'No results found.' : ''
+        failureCenterFilter ? emptyMessage : filtered ? 'No results found.' : ''
       );
       return true;
     }
@@ -1107,7 +1417,28 @@ async function loadNotes(
       {append}
     );
 
-    for (const note of textNotes) {
+    const completedIds = await getCompletedNoteIds();
+    const activeNotes = textNotes.filter(note => !completedIds.has(note.id));
+
+    if (!append && !activeNotes.length) {
+      const inactiveNotesMessage = failureCenterFilter
+        ? emptyMessage
+        : filtered
+          ? 'No inbox items match these filters.'
+          : 'No active saved notes. Capture a thought above or all completed!';
+      root.innerHTML = `<div class="panel muted">${inactiveNotesMessage}</div>`;
+      setStatus(
+        'searchStatus',
+        failureCenterFilter
+          ? emptyMessage
+          : filtered
+            ? 'No results found.'
+            : ''
+      );
+      return true;
+    }
+
+    for (const note of activeNotes) {
       root.appendChild(renderNote(note));
     }
 
@@ -1218,21 +1549,26 @@ async function loadDashboard() {
         ? `<ul>${items.map(render).join('')}</ul>`
         : '<p class="muted">Nothing here yet.</p>';
 
+    const completedIds = await getCompletedNoteIds();
+    const activeHighPriority = (data.high_priority || []).filter(item => !completedIds.has(item.id));
+    const activeRecentlyCaptured = (data.recently_captured || []).filter(item => !completedIds.has(item.id));
+    const activeNeedsReview = (data.needs_review || []).filter(item => !completedIds.has(item.id));
+
     root.innerHTML = `
       <div class="dashboard-grid">
         ${section('Topics / Spaces', listOrEmpty(data.topics, t =>
           `<li><strong>${esc(t.name)}</strong> · ${t.item_count}</li>`
         ))}
-        ${section('High Priority', listOrEmpty(data.high_priority, item =>
+        ${section('High Priority', listOrEmpty(activeHighPriority, item =>
           `<li>${esc(item.effective_title || item.raw_text || ('#' + item.id))}${item.rationale ? `<div class="why">Why: ${esc(item.rationale)}</div>` : ''}</li>`
         ))}
         ${section('Open Tasks', listOrEmpty(data.open_tasks, task =>
           `<li><strong>${esc(task.text)}</strong> <span class="pill">${esc(task.priority)}</span>${task.timing_text ? ` · ${esc(task.timing_text)}${task.timing_confirmed ? ' (confirmed)' : ' (AI suggested)'}` : ''}</li>`
         ))}
-        ${section('Recently Captured', listOrEmpty(data.recently_captured, item =>
+        ${section('Recently Captured', listOrEmpty(activeRecentlyCaptured, item =>
           `<li>#${item.id} · ${esc((item.raw_text || '').slice(0, 80))}</li>`
         ))}
-        ${section('Needs Review', listOrEmpty(data.needs_review, item =>
+        ${section('Needs Review', listOrEmpty(activeNeedsReview, item =>
           `<li>#${item.id} · ${esc(item.reason || 'Review needed')}</li>`
         ))}
         ${section('Related Items', listOrEmpty(data.related_items, rel =>
@@ -1488,6 +1824,411 @@ async function changePassword(event) {
   }
 }
 
+// --- In-App Calendar Component ---
+let calendarViewYear = new Date().getFullYear();
+let calendarViewMonth = new Date().getMonth();
+let calendarSelectedDateStr = toCalendarIsoDate(new Date());
+let calendarEventsByDate = new Map();
+
+function toCalendarIsoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function parseCalendarIsoDate(str) {
+  const [y, m, d] = str.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function changeCalendarMonth(delta) {
+  calendarViewMonth += delta;
+  if (calendarViewMonth < 0) {
+    calendarViewMonth = 11;
+    calendarViewYear -= 1;
+  } else if (calendarViewMonth > 11) {
+    calendarViewMonth = 0;
+    calendarViewYear += 1;
+  }
+  loadCalendarEvents();
+}
+
+function jumpCalendarToToday() {
+  const today = new Date();
+  calendarViewYear = today.getFullYear();
+  calendarViewMonth = today.getMonth();
+  calendarSelectedDateStr = toCalendarIsoDate(today);
+  loadCalendarEvents();
+}
+
+async function loadCalendarEvents() {
+  const gridEl = document.getElementById('calendarGrid');
+  if (!gridEl) return;
+
+  const firstDay = new Date(calendarViewYear, calendarViewMonth, 1);
+  const lastDay = new Date(calendarViewYear, calendarViewMonth + 1, 0);
+
+  // Monday-based week: 0=Mon, 6=Sun
+  const startDayOfWeek = (firstDay.getDay() + 6) % 7;
+  const gridStart = new Date(firstDay);
+  gridStart.setDate(firstDay.getDate() - startDayOfWeek);
+
+  const endDayOfWeek = (lastDay.getDay() + 6) % 7;
+  const gridEnd = new Date(lastDay);
+  gridEnd.setDate(lastDay.getDate() + (6 - endDayOfWeek));
+
+  const startIso = toCalendarIsoDate(gridStart);
+  const endIso = toCalendarIsoDate(gridEnd);
+
+  try {
+    const events = await fetchJson(
+      `/api/calendar/events?start=${startIso}&end=${endIso}`,
+      {},
+      'Unable to load calendar events.'
+    );
+
+    calendarEventsByDate = new Map();
+    for (const ev of events) {
+      if (!calendarEventsByDate.has(ev.event_date)) {
+        calendarEventsByDate.set(ev.event_date, []);
+      }
+      calendarEventsByDate.get(ev.event_date).push(ev);
+    }
+    renderCalendar(gridStart, gridEnd);
+    renderSelectedDayEvents();
+  } catch {
+    setStatus('inAppCalendarStatus', 'Could not load calendar events.', true);
+  }
+}
+
+function renderCalendar(gridStart, gridEnd) {
+  const titleEl = document.getElementById('calMonthYear');
+  const gridEl = document.getElementById('calendarGrid');
+  if (!titleEl || !gridEl) return;
+
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+  titleEl.textContent = `${monthNames[calendarViewMonth]} ${calendarViewYear}`;
+
+  gridEl.replaceChildren();
+
+  const daysOfWeek = [
+    ['Mon', 'Monday'],
+    ['Tue', 'Tuesday'],
+    ['Wed', 'Wednesday'],
+    ['Thu', 'Thursday'],
+    ['Fri', 'Friday'],
+    ['Sat', 'Saturday'],
+    ['Sun', 'Sunday']
+  ];
+  for (const [shortName, fullName] of daysOfWeek) {
+    const colHeader = document.createElement('div');
+    colHeader.className = 'cal-day-header';
+    colHeader.setAttribute('role', 'columnheader');
+    colHeader.setAttribute('aria-label', fullName);
+    colHeader.textContent = shortName;
+    gridEl.appendChild(colHeader);
+  }
+
+  const todayStr = toCalendarIsoDate(new Date());
+  const iter = new Date(gridStart);
+
+  while (iter <= gridEnd) {
+    const dateStr = toCalendarIsoDate(iter);
+    const dayNum = iter.getDate();
+    const isOtherMonth = iter.getMonth() !== calendarViewMonth;
+    const isToday = dateStr === todayStr;
+    const isSelected = dateStr === calendarSelectedDateStr;
+    const dayEvents = calendarEventsByDate.get(dateStr) || [];
+
+    const cell = document.createElement('div');
+    cell.className = 'cal-day-cell' +
+      (isOtherMonth ? ' cal-day-other' : '') +
+      (isToday ? ' cal-day-today' : '') +
+      (isSelected ? ' cal-day-selected' : '');
+    cell.setAttribute('role', 'gridcell');
+    cell.tabIndex = 0;
+    cell.dataset.date = dateStr;
+    cell.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+
+    const formattedLabel = iter.toLocaleDateString(undefined, {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+    cell.setAttribute(
+      'aria-label',
+      `${formattedLabel}${dayEvents.length ? `, ${dayEvents.length} events` : ', no events'}`
+    );
+
+    const numSpan = document.createElement('span');
+    numSpan.className = 'cal-day-num';
+    numSpan.textContent = String(dayNum);
+    cell.appendChild(numSpan);
+
+    if (dayEvents.length > 0) {
+      const dotsContainer = document.createElement('div');
+      dotsContainer.className = 'cal-event-dots';
+
+      for (const ev of dayEvents.slice(0, 3)) {
+        const dot = document.createElement('span');
+        dot.className = 'cal-dot' +
+          (ev.status === 'completed' ? ' completed' : ev.needs_confirmation ? ' unconfirmed' : '');
+        dotsContainer.appendChild(dot);
+      }
+      if (dayEvents.length > 3) {
+        const moreSpan = document.createElement('span');
+        moreSpan.style.fontSize = '9px';
+        moreSpan.style.color = '#64748b';
+        moreSpan.textContent = `+${dayEvents.length - 3}`;
+        dotsContainer.appendChild(moreSpan);
+      }
+      cell.appendChild(dotsContainer);
+    }
+
+    const cellDateCopy = new Date(iter);
+    cell.addEventListener('click', () => {
+      calendarSelectedDateStr = dateStr;
+      if (isOtherMonth) {
+        calendarViewMonth = cellDateCopy.getMonth();
+        calendarViewYear = cellDateCopy.getFullYear();
+        loadCalendarEvents();
+      } else {
+        renderCalendar(gridStart, gridEnd);
+        renderSelectedDayEvents();
+      }
+    });
+
+    cell.addEventListener('keydown', (e) => {
+      let targetDate = parseCalendarIsoDate(dateStr);
+      let handled = false;
+      if (e.key === 'ArrowLeft') {
+        targetDate.setDate(targetDate.getDate() - 1);
+        handled = true;
+      } else if (e.key === 'ArrowRight') {
+        targetDate.setDate(targetDate.getDate() + 1);
+        handled = true;
+      } else if (e.key === 'ArrowUp') {
+        targetDate.setDate(targetDate.getDate() - 7);
+        handled = true;
+      } else if (e.key === 'ArrowDown') {
+        targetDate.setDate(targetDate.getDate() + 7);
+        handled = true;
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        calendarSelectedDateStr = dateStr;
+        renderCalendar(gridStart, gridEnd);
+        renderSelectedDayEvents();
+        e.preventDefault();
+        return;
+      }
+
+      if (handled) {
+        e.preventDefault();
+        calendarSelectedDateStr = toCalendarIsoDate(targetDate);
+        if (targetDate.getMonth() !== calendarViewMonth || targetDate.getFullYear() !== calendarViewYear) {
+          calendarViewMonth = targetDate.getMonth();
+          calendarViewYear = targetDate.getFullYear();
+          loadCalendarEvents();
+        } else {
+          renderCalendar(gridStart, gridEnd);
+          renderSelectedDayEvents();
+          const nextCell = document.querySelector(`.cal-day-cell[data-date="${calendarSelectedDateStr}"]`);
+          if (nextCell) nextCell.focus();
+        }
+      }
+    });
+
+    gridEl.appendChild(cell);
+    iter.setDate(iter.getDate() + 1);
+  }
+}
+
+function renderSelectedDayEvents() {
+  const headingEl = document.getElementById('calendarDayHeading');
+  const listEl = document.getElementById('calendarEventsList');
+  if (!headingEl || !listEl) return;
+
+  const selectedDate = parseCalendarIsoDate(calendarSelectedDateStr);
+  const formattedDate = selectedDate.toLocaleDateString(undefined, {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  });
+  const todayStr = toCalendarIsoDate(new Date());
+  const isToday = calendarSelectedDateStr === todayStr;
+
+  headingEl.textContent = (isToday ? 'Today · ' : '') + formattedDate;
+  listEl.replaceChildren();
+
+  const events = calendarEventsByDate.get(calendarSelectedDateStr) || [];
+  if (events.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.style.padding = '8px 0';
+    empty.textContent = 'No events or timed items on this day.';
+    listEl.appendChild(empty);
+    return;
+  }
+
+  const typeIcons = {
+    text: '📝',
+    voice: '🎙️',
+    url: '🔗',
+    pdf: '📄',
+    image: '🖼️'
+  };
+
+  for (const ev of events) {
+    const card = document.createElement('div');
+    card.className = 'cal-event-card';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'cal-event-title' + (ev.status === 'completed' ? ' completed' : '');
+    titleEl.textContent = ev.title;
+    card.appendChild(titleEl);
+
+    const metaEl = document.createElement('div');
+    metaEl.className = 'cal-event-meta';
+
+    // Type badge
+    const typeBadge = document.createElement('span');
+    typeBadge.className = 'cal-pill type';
+    const icon = typeIcons[ev.source_type] || '📝';
+    typeBadge.textContent = `${icon} ${ev.source_type}`;
+    metaEl.appendChild(typeBadge);
+
+    // Priority badge
+    if (ev.priority) {
+      const priorityBadge = document.createElement('span');
+      priorityBadge.className = `cal-pill priority-${ev.priority.toLowerCase()}`;
+      priorityBadge.textContent = ev.priority;
+      metaEl.appendChild(priorityBadge);
+    }
+
+    // Time chip
+    if (ev.time_of_day) {
+      const timeBadge = document.createElement('span');
+      timeBadge.className = 'cal-pill time';
+      timeBadge.textContent = `⏰ ${ev.time_of_day}`;
+      metaEl.appendChild(timeBadge);
+    }
+
+    // Completed badge
+    if (ev.status === 'completed') {
+      const completedBadge = document.createElement('span');
+      completedBadge.className = 'cal-pill completed';
+      completedBadge.textContent = '✓ Completed';
+      metaEl.appendChild(completedBadge);
+    }
+
+    // Needs confirmation badge
+    if (ev.needs_confirmation) {
+      const unconfBadge = document.createElement('span');
+      unconfBadge.className = 'cal-pill unconfirmed';
+      unconfBadge.textContent = `⚠️ Unconfirmed${ev.timing_text ? ` ("${ev.timing_text}")` : ''}`;
+      metaEl.appendChild(unconfBadge);
+    }
+
+    card.appendChild(metaEl);
+
+    // Actions row
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'cal-event-actions';
+
+    if (ev.source_item_id) {
+      const jumpBtn = document.createElement('button');
+      jumpBtn.type = 'button';
+      jumpBtn.className = 'secondary cal-action-btn';
+      jumpBtn.textContent = 'View source note';
+      jumpBtn.onclick = () => jumpToSourceNote(ev.source_item_id);
+      actionsEl.appendChild(jumpBtn);
+    }
+
+    if (ev.needs_confirmation) {
+      const confirmBtn = document.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.className = 'secondary cal-action-btn';
+      confirmBtn.textContent = 'Confirm date';
+      confirmBtn.onclick = async () => {
+        try {
+          await fetchJson(
+            `/api/tasks/${ev.id}/confirm-timing`,
+            {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({timing_text: ev.event_date})
+            },
+            'Unable to confirm timing.'
+          );
+          setStatus('inAppCalendarStatus', 'Event date confirmed.');
+          await loadTasks();
+          await loadAttention();
+          await loadCalendarEvents();
+        } catch {
+          setStatus('inAppCalendarStatus', 'Could not confirm timing.', true);
+        }
+      };
+      actionsEl.appendChild(confirmBtn);
+    }
+
+    if (ev.status === 'open') {
+      const doneBtn = document.createElement('button');
+      doneBtn.type = 'button';
+      doneBtn.className = 'secondary cal-action-btn';
+      doneBtn.textContent = 'Mark done';
+      doneBtn.onclick = async () => {
+        await transitionTask(ev.id, 'complete', actionsEl);
+      };
+      actionsEl.appendChild(doneBtn);
+    } else if (ev.status === 'completed') {
+      const reopenBtn = document.createElement('button');
+      reopenBtn.type = 'button';
+      reopenBtn.className = 'secondary cal-action-btn';
+      reopenBtn.textContent = 'Reopen';
+      reopenBtn.onclick = async () => {
+        await transitionTask(ev.id, 'reopen', actionsEl);
+      };
+      actionsEl.appendChild(reopenBtn);
+    }
+
+    card.appendChild(actionsEl);
+    listEl.appendChild(card);
+  }
+}
+
+async function jumpToSourceNote(itemId) {
+  let noteEl = document.querySelector(`.note[data-note-id="${itemId}"]`);
+  if (!noteEl) {
+    setStatus('searchStatus', `Locating source note #${itemId}…`);
+    try {
+      const input = document.getElementById('itemSearch');
+      if (input) input.value = '';
+      const typeFilter = document.getElementById('itemTypeFilter');
+      if (typeFilter) typeFilter.value = '';
+      await loadNotes();
+      noteEl = document.querySelector(`.note[data-note-id="${itemId}"]`);
+    } catch {
+      // ignore
+    }
+  }
+
+  if (noteEl) {
+    noteEl.scrollIntoView({behavior: 'smooth', block: 'center'});
+    noteEl.classList.add('note-highlight');
+    setTimeout(() => noteEl.classList.remove('note-highlight'), 2600);
+    setStatus('noteStatus', `Scrolled to source note #${itemId}.`);
+  } else {
+    setStatus('noteStatus', `Source note #${itemId} is not in the active notes view.`);
+    const notesEl = document.getElementById('notes');
+    if (notesEl) notesEl.scrollIntoView({behavior: 'smooth', block: 'start'});
+  }
+}
+
 syncControlsFromUrl();
 loadAuthUser();
 loadNotes();
@@ -1496,6 +2237,7 @@ loadTasks();
 loadTopics();
 loadDashboard();
 loadAttention();
+loadCalendarEvents();
 
 window.addEventListener('popstate', () => {
   syncControlsFromUrl();

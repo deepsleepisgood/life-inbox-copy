@@ -12,6 +12,8 @@
 | 4 — Retrieval + Ask My Inbox | `milestone/4-retrieval-chat` | `milestone-4` | Done |
 | 5 — Attention / actions | `milestone/5-attention-actions` | `milestone-5` | Done |
 | 6 — Deployable beta | `milestone/6-deployable-beta` | `milestone-6` | Done |
+| 7 — NVIDIA NIM & Voice Notes | `main` | `milestone-7` | Done |
+| 8 — In-App Calendar | `main` | `milestone-8` | Done |
 
 See Project store reports under `docs/milestone-N-report.md` for full
 quality-gate evidence.
