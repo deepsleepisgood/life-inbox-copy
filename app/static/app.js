@@ -51,6 +51,8 @@ async function processAnalysisQueue() {
       await loadTasks();
       await loadTopics();
       await loadDashboard();
+      await loadAttention();
+      await loadCalendarEvents();
       setStatus('analysisStatus', 'Analysis complete.');
     } catch {
       setStatus(
@@ -873,6 +875,8 @@ function showEditExtractedText(note, root) {
       root.replaceWith(renderNote(updated));
       setStatus('noteStatus', isVoice ? 'Transcript updated.' : 'Extracted text updated.');
       await loadLatestAnalysis();
+      autoAnalyzeInbox(note.id);
+      await loadCalendarEvents();
     } catch {
       setStatus('noteStatus', 'Could not update extracted text.', true);
       saveButton.disabled = false;
@@ -932,6 +936,8 @@ function showEditNote(note, root) {
       root.replaceWith(renderNote(updatedNote));
       setStatus('noteStatus', 'Note updated.');
       await loadLatestAnalysis();
+      autoAnalyzeInbox(note.id);
+      await loadCalendarEvents();
     } catch {
       setStatus(
         'noteStatus',
@@ -984,6 +990,8 @@ async function deleteExistingNote(note, root, editButton, deleteButton) {
     setStatus('noteStatus', 'Note deleted.');
     await loadLatestAnalysis();
     await loadTasks();
+    await loadAttention();
+    await loadCalendarEvents();
   } catch {
     setStatus(
       'noteStatus',
@@ -1075,6 +1083,7 @@ function renderTask(task) {
             await loadTasks();
             await loadDashboard();
             await loadAttention();
+            await loadCalendarEvents();
           } catch {
             setStatus('taskStatus', 'Could not confirm timing.', true);
           }
@@ -1144,6 +1153,7 @@ async function transitionTask(taskId, action, actions) {
     await loadTasks();
     await loadAttention();
     await loadDashboard();
+    await loadCalendarEvents();
   } catch {
     setStatus(
       'taskStatus',
@@ -1719,6 +1729,7 @@ async function devLogin(event) {
     await loadTasks();
     await loadAttention();
     await loadDashboard();
+    await loadCalendarEvents();
   } catch {
     setStatus('authStatus', 'Sign-in failed (dev login may be disabled).', true);
   }
@@ -1729,8 +1740,417 @@ async function logoutSession() {
     await fetchJson('/api/auth/logout', {method: 'POST'}, 'Unable to sign out.');
     setStatus('authStatus', 'Signed out.');
     await loadAuthUser();
+    await loadCalendarEvents();
   } catch {
     setStatus('authStatus', 'Sign-out failed.', true);
+  }
+}
+
+// --- In-App Calendar Component ---
+let calendarViewYear = new Date().getFullYear();
+let calendarViewMonth = new Date().getMonth();
+let calendarSelectedDateStr = toCalendarIsoDate(new Date());
+let calendarEventsByDate = new Map();
+
+function toCalendarIsoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function parseCalendarIsoDate(str) {
+  const [y, m, d] = str.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function changeCalendarMonth(delta) {
+  calendarViewMonth += delta;
+  if (calendarViewMonth < 0) {
+    calendarViewMonth = 11;
+    calendarViewYear -= 1;
+  } else if (calendarViewMonth > 11) {
+    calendarViewMonth = 0;
+    calendarViewYear += 1;
+  }
+  loadCalendarEvents();
+}
+
+function jumpCalendarToToday() {
+  const today = new Date();
+  calendarViewYear = today.getFullYear();
+  calendarViewMonth = today.getMonth();
+  calendarSelectedDateStr = toCalendarIsoDate(today);
+  loadCalendarEvents();
+}
+
+async function loadCalendarEvents() {
+  const gridEl = document.getElementById('calendarGrid');
+  if (!gridEl) return;
+
+  const firstDay = new Date(calendarViewYear, calendarViewMonth, 1);
+  const lastDay = new Date(calendarViewYear, calendarViewMonth + 1, 0);
+
+  // Monday-based week: 0=Mon, 6=Sun
+  const startDayOfWeek = (firstDay.getDay() + 6) % 7;
+  const gridStart = new Date(firstDay);
+  gridStart.setDate(firstDay.getDate() - startDayOfWeek);
+
+  const endDayOfWeek = (lastDay.getDay() + 6) % 7;
+  const gridEnd = new Date(lastDay);
+  gridEnd.setDate(lastDay.getDate() + (6 - endDayOfWeek));
+
+  const startIso = toCalendarIsoDate(gridStart);
+  const endIso = toCalendarIsoDate(gridEnd);
+
+  try {
+    const events = await fetchJson(
+      `/api/calendar/events?start=${startIso}&end=${endIso}`,
+      {},
+      'Unable to load calendar events.'
+    );
+
+    calendarEventsByDate = new Map();
+    for (const ev of events) {
+      if (!calendarEventsByDate.has(ev.event_date)) {
+        calendarEventsByDate.set(ev.event_date, []);
+      }
+      calendarEventsByDate.get(ev.event_date).push(ev);
+    }
+    renderCalendar(gridStart, gridEnd);
+    renderSelectedDayEvents();
+  } catch {
+    setStatus('inAppCalendarStatus', 'Could not load calendar events.', true);
+  }
+}
+
+function renderCalendar(gridStart, gridEnd) {
+  const titleEl = document.getElementById('calMonthYear');
+  const gridEl = document.getElementById('calendarGrid');
+  if (!titleEl || !gridEl) return;
+
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+  titleEl.textContent = `${monthNames[calendarViewMonth]} ${calendarViewYear}`;
+
+  gridEl.replaceChildren();
+
+  const daysOfWeek = [
+    ['Mon', 'Monday'],
+    ['Tue', 'Tuesday'],
+    ['Wed', 'Wednesday'],
+    ['Thu', 'Thursday'],
+    ['Fri', 'Friday'],
+    ['Sat', 'Saturday'],
+    ['Sun', 'Sunday']
+  ];
+  for (const [shortName, fullName] of daysOfWeek) {
+    const colHeader = document.createElement('div');
+    colHeader.className = 'cal-day-header';
+    colHeader.setAttribute('role', 'columnheader');
+    colHeader.setAttribute('aria-label', fullName);
+    colHeader.textContent = shortName;
+    gridEl.appendChild(colHeader);
+  }
+
+  const todayStr = toCalendarIsoDate(new Date());
+  const iter = new Date(gridStart);
+
+  while (iter <= gridEnd) {
+    const dateStr = toCalendarIsoDate(iter);
+    const dayNum = iter.getDate();
+    const isOtherMonth = iter.getMonth() !== calendarViewMonth;
+    const isToday = dateStr === todayStr;
+    const isSelected = dateStr === calendarSelectedDateStr;
+    const dayEvents = calendarEventsByDate.get(dateStr) || [];
+
+    const cell = document.createElement('div');
+    cell.className = 'cal-day-cell' +
+      (isOtherMonth ? ' cal-day-other' : '') +
+      (isToday ? ' cal-day-today' : '') +
+      (isSelected ? ' cal-day-selected' : '');
+    cell.setAttribute('role', 'gridcell');
+    cell.tabIndex = 0;
+    cell.dataset.date = dateStr;
+    cell.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+
+    const formattedLabel = iter.toLocaleDateString(undefined, {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+    cell.setAttribute(
+      'aria-label',
+      `${formattedLabel}${dayEvents.length ? `, ${dayEvents.length} events` : ', no events'}`
+    );
+
+    const numSpan = document.createElement('span');
+    numSpan.className = 'cal-day-num';
+    numSpan.textContent = String(dayNum);
+    cell.appendChild(numSpan);
+
+    if (dayEvents.length > 0) {
+      const dotsContainer = document.createElement('div');
+      dotsContainer.className = 'cal-event-dots';
+
+      for (const ev of dayEvents.slice(0, 3)) {
+        const dot = document.createElement('span');
+        dot.className = 'cal-dot' +
+          (ev.status === 'completed' ? ' completed' : ev.needs_confirmation ? ' unconfirmed' : '');
+        dotsContainer.appendChild(dot);
+      }
+      if (dayEvents.length > 3) {
+        const moreSpan = document.createElement('span');
+        moreSpan.style.fontSize = '9px';
+        moreSpan.style.color = '#64748b';
+        moreSpan.textContent = `+${dayEvents.length - 3}`;
+        dotsContainer.appendChild(moreSpan);
+      }
+      cell.appendChild(dotsContainer);
+    }
+
+    const cellDateCopy = new Date(iter);
+    cell.addEventListener('click', () => {
+      calendarSelectedDateStr = dateStr;
+      if (isOtherMonth) {
+        calendarViewMonth = cellDateCopy.getMonth();
+        calendarViewYear = cellDateCopy.getFullYear();
+        loadCalendarEvents();
+      } else {
+        renderCalendar(gridStart, gridEnd);
+        renderSelectedDayEvents();
+      }
+    });
+
+    cell.addEventListener('keydown', (e) => {
+      let targetDate = parseCalendarIsoDate(dateStr);
+      let handled = false;
+      if (e.key === 'ArrowLeft') {
+        targetDate.setDate(targetDate.getDate() - 1);
+        handled = true;
+      } else if (e.key === 'ArrowRight') {
+        targetDate.setDate(targetDate.getDate() + 1);
+        handled = true;
+      } else if (e.key === 'ArrowUp') {
+        targetDate.setDate(targetDate.getDate() - 7);
+        handled = true;
+      } else if (e.key === 'ArrowDown') {
+        targetDate.setDate(targetDate.getDate() + 7);
+        handled = true;
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        calendarSelectedDateStr = dateStr;
+        renderCalendar(gridStart, gridEnd);
+        renderSelectedDayEvents();
+        e.preventDefault();
+        return;
+      }
+
+      if (handled) {
+        e.preventDefault();
+        calendarSelectedDateStr = toCalendarIsoDate(targetDate);
+        if (targetDate.getMonth() !== calendarViewMonth || targetDate.getFullYear() !== calendarViewYear) {
+          calendarViewMonth = targetDate.getMonth();
+          calendarViewYear = targetDate.getFullYear();
+          loadCalendarEvents();
+        } else {
+          renderCalendar(gridStart, gridEnd);
+          renderSelectedDayEvents();
+          const nextCell = document.querySelector(`.cal-day-cell[data-date="${calendarSelectedDateStr}"]`);
+          if (nextCell) nextCell.focus();
+        }
+      }
+    });
+
+    gridEl.appendChild(cell);
+    iter.setDate(iter.getDate() + 1);
+  }
+}
+
+function renderSelectedDayEvents() {
+  const headingEl = document.getElementById('calendarDayHeading');
+  const listEl = document.getElementById('calendarEventsList');
+  if (!headingEl || !listEl) return;
+
+  const selectedDate = parseCalendarIsoDate(calendarSelectedDateStr);
+  const formattedDate = selectedDate.toLocaleDateString(undefined, {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  });
+  const todayStr = toCalendarIsoDate(new Date());
+  const isToday = calendarSelectedDateStr === todayStr;
+
+  headingEl.textContent = (isToday ? 'Today · ' : '') + formattedDate;
+  listEl.replaceChildren();
+
+  const events = calendarEventsByDate.get(calendarSelectedDateStr) || [];
+  if (events.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.style.padding = '8px 0';
+    empty.textContent = 'No events or timed items on this day.';
+    listEl.appendChild(empty);
+    return;
+  }
+
+  const typeIcons = {
+    text: '📝',
+    voice: '🎙️',
+    url: '🔗',
+    pdf: '📄',
+    image: '🖼️'
+  };
+
+  for (const ev of events) {
+    const card = document.createElement('div');
+    card.className = 'cal-event-card';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'cal-event-title' + (ev.status === 'completed' ? ' completed' : '');
+    titleEl.textContent = ev.title;
+    card.appendChild(titleEl);
+
+    const metaEl = document.createElement('div');
+    metaEl.className = 'cal-event-meta';
+
+    // Type badge
+    const typeBadge = document.createElement('span');
+    typeBadge.className = 'cal-pill type';
+    const icon = typeIcons[ev.source_type] || '📝';
+    typeBadge.textContent = `${icon} ${ev.source_type}`;
+    metaEl.appendChild(typeBadge);
+
+    // Priority badge
+    if (ev.priority) {
+      const priorityBadge = document.createElement('span');
+      priorityBadge.className = `cal-pill priority-${ev.priority.toLowerCase()}`;
+      priorityBadge.textContent = ev.priority;
+      metaEl.appendChild(priorityBadge);
+    }
+
+    // Time chip
+    if (ev.time_of_day) {
+      const timeBadge = document.createElement('span');
+      timeBadge.className = 'cal-pill time';
+      timeBadge.textContent = `⏰ ${ev.time_of_day}`;
+      metaEl.appendChild(timeBadge);
+    }
+
+    // Completed badge
+    if (ev.status === 'completed') {
+      const completedBadge = document.createElement('span');
+      completedBadge.className = 'cal-pill completed';
+      completedBadge.textContent = '✓ Completed';
+      metaEl.appendChild(completedBadge);
+    }
+
+    // Needs confirmation badge
+    if (ev.needs_confirmation) {
+      const unconfBadge = document.createElement('span');
+      unconfBadge.className = 'cal-pill unconfirmed';
+      unconfBadge.textContent = `⚠️ Unconfirmed${ev.timing_text ? ` ("${ev.timing_text}")` : ''}`;
+      metaEl.appendChild(unconfBadge);
+    }
+
+    card.appendChild(metaEl);
+
+    // Actions row
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'cal-event-actions';
+
+    if (ev.source_item_id) {
+      const jumpBtn = document.createElement('button');
+      jumpBtn.type = 'button';
+      jumpBtn.className = 'secondary cal-action-btn';
+      jumpBtn.textContent = 'View source note';
+      jumpBtn.onclick = () => jumpToSourceNote(ev.source_item_id);
+      actionsEl.appendChild(jumpBtn);
+    }
+
+    if (ev.needs_confirmation) {
+      const confirmBtn = document.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.className = 'secondary cal-action-btn';
+      confirmBtn.textContent = 'Confirm date';
+      confirmBtn.onclick = async () => {
+        try {
+          await fetchJson(
+            `/api/tasks/${ev.id}/confirm-timing`,
+            {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({timing_text: ev.event_date})
+            },
+            'Unable to confirm timing.'
+          );
+          setStatus('inAppCalendarStatus', 'Event date confirmed.');
+          await loadTasks();
+          await loadAttention();
+          await loadCalendarEvents();
+        } catch {
+          setStatus('inAppCalendarStatus', 'Could not confirm timing.', true);
+        }
+      };
+      actionsEl.appendChild(confirmBtn);
+    }
+
+    if (ev.status === 'open') {
+      const doneBtn = document.createElement('button');
+      doneBtn.type = 'button';
+      doneBtn.className = 'secondary cal-action-btn';
+      doneBtn.textContent = 'Mark done';
+      doneBtn.onclick = async () => {
+        try {
+          await fetchJson(
+            `/api/tasks/${ev.id}/complete`,
+            {method: 'POST'},
+            'Unable to complete task.'
+          );
+          setStatus('inAppCalendarStatus', 'Task completed.');
+          await loadTasks();
+          await loadAttention();
+          await loadCalendarEvents();
+        } catch {
+          setStatus('inAppCalendarStatus', 'Could not complete task.', true);
+        }
+      };
+      actionsEl.appendChild(doneBtn);
+    }
+
+    card.appendChild(actionsEl);
+    listEl.appendChild(card);
+  }
+}
+
+async function jumpToSourceNote(itemId) {
+  let noteEl = document.querySelector(`.note[data-note-id="${itemId}"]`);
+  if (!noteEl) {
+    setStatus('searchStatus', `Locating source note #${itemId}…`);
+    try {
+      const input = document.getElementById('itemSearch');
+      if (input) input.value = '';
+      const typeFilter = document.getElementById('itemTypeFilter');
+      if (typeFilter) typeFilter.value = '';
+      await loadNotes();
+      noteEl = document.querySelector(`.note[data-note-id="${itemId}"]`);
+    } catch {
+      // ignore
+    }
+  }
+
+  if (noteEl) {
+    noteEl.scrollIntoView({behavior: 'smooth', block: 'center'});
+    noteEl.classList.add('note-highlight');
+    setTimeout(() => noteEl.classList.remove('note-highlight'), 2600);
+    setStatus('noteStatus', `Scrolled to source note #${itemId}.`);
+  } else {
+    setStatus('noteStatus', `Source note #${itemId} is not in the active notes view.`);
+    const notesEl = document.getElementById('notes');
+    if (notesEl) notesEl.scrollIntoView({behavior: 'smooth', block: 'start'});
   }
 }
 
@@ -1742,6 +2162,7 @@ loadTasks();
 loadTopics();
 loadDashboard();
 loadAttention();
+loadCalendarEvents();
 
 window.addEventListener('popstate', () => {
   syncControlsFromUrl();

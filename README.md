@@ -7,6 +7,7 @@ It preserves the features already present in the notebook:
 - capture URLs, PDFs, and images;
 - list, edit, and delete saved notes and voice memos;
 - organize the entire inbox into buckets, priorities, and ToDos;
+- in-app interactive calendar that automatically displays dated items from all capture types;
 - Ask My Inbox with citation-grounded answers;
 - use the NVIDIA NIM API (or OpenAI-compatible endpoint) when an API key is available;
 - use the deterministic fallback organizer and extractive QA otherwise.
@@ -53,7 +54,17 @@ Life Inbox includes built-in voice note capture:
   4. Cleaned text is stored in `raw_text` for notes, search, tasks, and analysis; the original verbatim transcript is preserved in `extracted_text`.
 - Voice notes can be played back, edited, and deleted just like any text note.
 
-## 3. Configure NVIDIA NIM (or Offline Fallback)
+## 3. In-App Calendar for Dated Items
+
+Life Inbox includes an integrated, responsive in-app calendar embedded directly in the workspace:
+- **Zero Manual Step**: Notes captured via text, voice recordings, URLs, PDFs, or images that mention a date or time (e.g. "dentist on 3 Nov", "renew insurance by next Friday") appear automatically on the calendar upon ingestion. Items without dates are excluded.
+- **Month View with Event Indicators**: Days with events show visual event dots and counts. Controls allow switching between previous/next months and returning to "Today".
+- **Day Inspector & Note Linking**: Clicking any day displays scheduled items with their title, source type badge (`text`, `voice`, `url`, `pdf`, `image`), and priority. Clicking "View source note" smoothly scrolls to and highlights the original note in the inbox.
+- **Ambiguous & Relative Timing**: Ambiguous dates display unconfirmed styling (`⚠️ Needs confirmation`) with an inline confirmation action.
+- **Lifecycle Handling**: Completed tasks are shown struck through; dismissed tasks are hidden. Deleting or editing a note immediately updates the calendar.
+- **Read-Only API**: Powered by `GET /api/calendar/events?start=YYYY-MM-DD&end=YYYY-MM-DD`, querying existing task and note relations without expensive on-demand AI calls.
+
+## 4. Configure NVIDIA NIM (or Offline Fallback)
 
 Life Inbox works 100% offline out-of-the-box using rule-based deterministic organization and extractive question answering.
 
@@ -69,7 +80,7 @@ DATABASE_URL=sqlite:///data/life_inbox.db
 
 Never commit `.env` to Git. `.env` is loaded automatically on startup via `python-dotenv`.
 
-## 4. Run the Automated Tests
+## 5. Run the Automated Tests
 
 Run the test suite with pytest (all tests mock external AI calls with 0 paid/network requests):
 
@@ -83,7 +94,7 @@ Run the test suite with pytest (all tests mock external AI calls with 0 paid/net
 
 The tests use temporary SQLite databases and do not call OpenAI.
 
-## 7. Optional: add demonstration notes
+## 6. Optional: add demonstration notes
 
 The original notebook included a utility that adds realistic sample notes.
 While the server is stopped, run:
@@ -127,6 +138,7 @@ life-inbox/
 ├── scripts/seed_demo_notes.py
 ├── tests/
 │   ├── test_api.py
+│   ├── test_calendar.py
 │   └── test_migrations.py
 ├── reference/original_life_inbox_notebook.ipynb
 ├── .github/workflows/ci.yml

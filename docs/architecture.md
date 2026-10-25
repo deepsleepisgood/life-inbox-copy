@@ -82,9 +82,21 @@ OCR/vision/transcription adapters degrade gracefully when not configured
   `due_on` + `due_confidence` power Today/Upcoming/Overdue/Unscheduled views.
 - Ambiguous timing sets `needs_confirmation` until the user confirms.
 - Snooze / reminder fields are local only (`snoozed_until`, `reminder_at`).
-- Calendar: `GET /api/calendar/status`, `POST /api/calendar/preview`,
+- Calendar integrations: `GET /api/calendar/status`, `POST /api/calendar/preview`,
   `POST /api/calendar/confirm`. Mock confirm stores a local receipt.
   Google provider is preview-only; confirm is blocked (no OAuth / no writes).
+
+## In-App Calendar
+
+- **Single Source of Truth**: The existing `tasks` table (`TaskRecord`) stores canonical date metadata (`due_on`, `due_confidence`, `timing_text`, `timing_confirmed`). Joined with `task_source_items` and `inbox_items` to retrieve full provenance without a separate event table or migrations.
+- **Endpoint**: `GET /api/calendar/events?start=YYYY-MM-DD&end=YYYY-MM-DD` provides read-only, performant queries filtered by date range and user isolation (`require_owner_id()`). Zero LLM / external API calls on page load.
+- **Date Normalization**: `app/attention/dates.py:parse_timing_phrase` parses ISO dates, Month-Day ("Nov 3"), Day-Month ("3 Nov"), Month-only ("sometime in March"), relative expressions ("next Friday", "tomorrow"), and explicit time strings.
+- **Lifecycle Rules**:
+  - Notes without dates are completely excluded.
+  - Completed tasks are displayed struck through with completion indicators.
+  - Dismissed tasks are excluded from the calendar.
+  - Deleting a source note cascades to orphan tasks and immediately removes calendar entries.
+- **Frontend & Interactions**: Vanilla JS month grid with ARIA accessibility, keyboard navigation, event indicators, day inspector with source badges (`text`, `voice`, `url`, `pdf`, `image`), and smooth-scroll/pulse highlighting to source notes. Automatically refreshes on note creation, edit, deletion, or analysis.
 
 ## External services
 

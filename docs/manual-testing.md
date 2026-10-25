@@ -100,6 +100,22 @@ Open http://127.0.0.1:8000
 - [ ] Confirm (mock) records a local receipt; `/api/calendar/status` shows writes_enabled=false
 - [ ] With `LIFE_INBOX_CALENDAR_PROVIDER=google`, confirm returns blocked (no OAuth/writes)
 
+## In-App Calendar smoke (Milestone 8+)
+
+- [ ] Month grid renders inside the Attention section with controls: Previous (`<`), Next (`>`), and Today.
+- [ ] Days with scheduled items display visual event dots or count pills.
+- [ ] Undated items do NOT appear on the calendar.
+- [ ] Clicking any day (with or without events) selects it and updates the Day Details panel.
+- [ ] Empty state renders cleanly when selecting a day with 0 events ("No events scheduled for this day").
+- [ ] Event cards display title, source type badge (`text`, `voice`, `url`, `pdf`, `image`), and priority chip.
+- [ ] Clicking "View source note" smoothly scrolls to and pulses/highlights the corresponding card in Raw Saved Notes.
+- [ ] Items with ambiguous/unconfirmed dates show `⚠️ Needs confirmation` and an inline "Confirm" button.
+- [ ] Confirming an ambiguous date updates it to confirmed styling immediately.
+- [ ] Completed tasks display struck through with a `✓ Completed` badge; dismissed tasks are hidden.
+- [ ] Adding a new note with a date (e.g. "Dentist on 3 Nov") automatically updates the calendar without manual page refresh.
+- [ ] Editing or deleting a dated note immediately updates or removes the calendar event.
+- [ ] Keyboard navigation: Arrow keys move selection across days/weeks; Enter selects the day.
+
 ## Pagination regression (delete + Load more)
 
 Automated coverage: `tests/test_pagination_state.py` (pure JS helper via Node).

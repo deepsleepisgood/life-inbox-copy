@@ -218,3 +218,48 @@ def test_calendar_events_note_edit_and_delete_lifecycle(client):
     # Orphan task is deleted; calendar has no events
     events_after_delete = client.get("/api/calendar/events?start=2026-11-01&end=2026-11-30").json()
     assert len(events_after_delete) == 0
+
+
+def test_calendar_html_elements_present(client):
+    res = client.get("/")
+    assert res.status_code == 200
+    html = res.text
+    assert 'id="inAppCalendar"' in html
+    assert 'id="calendarGrid"' in html
+    assert 'id="calendarDayHeading"' in html
+    assert 'id="calendarEventsList"' in html
+    assert 'id="calPrevBtn"' in html
+    assert 'id="calNextBtn"' in html
+    assert 'id="calTodayBtn"' in html
+
+
+def test_calendar_events_different_source_types(client, monkeypatch):
+    from tests.image_fixtures import make_png_bytes
+
+    monkeypatch.setenv("LIFE_INBOX_DISABLE_OCR", "1")
+
+    # Text note
+    text_item = client.post("/api/items", json={"raw_text": "Dentist appointment on 3 Nov"}).json()
+
+    # Image note with OCR text containing a date
+    img_res = client.post(
+        "/api/items/image",
+        files={"file": ("receipt.png", make_png_bytes(), "image/png")}
+    )
+    assert img_res.status_code == 200
+    img_item = img_res.json()
+    assert img_item["processing_status"] == "ready"
+
+    # Update extracted text to simulate OCR with date
+    client.patch(
+        f"/api/items/{img_item['id']}/extracted-text",
+        json={"extracted_text": "Flight ticket confirmation for 18 Nov"}
+    )
+
+    client.post("/api/analyze")
+
+    events = client.get("/api/calendar/events?start=2026-11-01&end=2026-11-30").json()
+    types_by_date = {e["event_date"]: e["source_type"] for e in events}
+    assert types_by_date.get("2026-11-03") == "text"
+    assert types_by_date.get("2026-11-18") == "image"
+

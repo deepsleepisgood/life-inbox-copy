@@ -318,5 +318,63 @@ Running log of architectural, code, and operational decisions.
 - **Verification**:
   - Ran full test suite via `pytest`: **121 passed in 25.76s** (100% green).
 
+---
+
+### 2026-10-25 12:55 IST (07:25 UTC) — Frontend Implementation, Browser Verification & Documentation Updates
+
+- **What was decided / changed**:
+  1. *Frontend Calendar Grid & UI (`app/templates/index.html`, `app/static/styles.css`)*:
+     - Placed the In-App Calendar directly within the Attention section (`#inAppCalendar`).
+     - Added month navigation controls: Previous Month (`<`), Next Month (`>`), and "Today".
+     - Designed responsive 7-column CSS grid (`Sun` through `Sat`) with leading/trailing days from adjacent months properly muted.
+     - Highlighted "Today" with an accent ring, active day selection with a distinct brand border/background, and days with scheduled items with vibrant event dots or count badges.
+     - Embedded Day Inspector panel displaying the human-formatted date (e.g. "Saturday, October 24, 2026"), event count, and cards for each scheduled event.
+     - Clean empty state with icon and message when a day with no events is clicked.
+  2. *Interactive Calendar Logic (`app/static/app.js`)*:
+     - Implemented `loadCalendarEvents()`, `renderCalendar()`, `selectCalendarDay()`, `navigateCalendarMonth()`, `jumpToCalendarToday()`, and `handleCalendarKeydown()`.
+     - Full keyboard accessibility: Arrow keys navigate between days and across weeks; Enter / Space selects the focused day.
+     - Source type badges (`text` 📝, `voice` 🎙️, `url` 🔗, `pdf` 📄, `image` 🖼️) and priority tags.
+     - "Jump to Note": clicking "View source note" smoothly scrolls to the source note card in Raw Saved Notes and triggers a temporary pulse/highlight CSS animation (`pulse-highlight`).
+     - Ambiguous date handling: Tasks with `needs_confirmation=true` show a warning badge (`⚠️ Needs confirmation`) and an inline "Confirm" button. Clicking Confirm calls `POST /api/tasks/{id}/confirm-date`, updates the task, and refreshes the calendar in real-time.
+     - Completed tasks: Rendered struck-through with `✓ Completed` badge and inline Reopen/Complete actions.
+     - Reactivity: Connected `loadCalendarEvents()` into the ingestion and lifecycle pipelines:
+       - Note creation (`addNote`, `uploadVoiceFile`, `addUrl`, `addPdf`, `addImage`) automatically triggers targeted single-note analysis and refreshes the calendar upon completion.
+       - Note edits (`saveNoteEdit`, `saveExtractedTextEdit`) trigger single-note analysis and refresh the calendar.
+       - Note deletion (`deleteNote`, `deleteItem`) cascades and refreshes the calendar.
+       - Task completion / reopen refreshes the calendar.
+  3. *Browser Verification via Chrome DevTools*:
+     - Spun up test server on `127.0.0.1:8000`.
+     - Inspected DOM and rendered view: Calendar rendered for October 2026 with "Today" (25th) highlighted and event indicators on 24th and 25th.
+     - Day selection test: Clicked October 24th; Day Details panel rendered "Play Pickle Ball" (`🎙️ voice`) and "Tell ABC to finish application" (`📝 text`, `⚠️ Unconfirmed`).
+     - Empty state test: Clicked October 15th; rendered "No events scheduled for this day".
+     - Month navigation test: Clicked Next Month (`▶`); rendered November 2026.
+     - End-to-end live note ingestion test:
+       - Entered note "dentist on 3 Nov".
+       - Verified automatic analysis enqueued and completed via NVIDIA NIM LLM (`nvidia/nemotron-3.5-bolt-e4b`) in <1s.
+       - Navigated to November 2026; Day 3 displayed event indicator; clicked Day 3 and verified "Attend dentist appointment" with priority and "View source note" action.
+     - Process cleanup: Successfully terminated the background server process and confirmed port 8000 is clean and unallocated.
+  4. *Documentation Updates*:
+     - Updated `README.md` to document the In-App Calendar feature, keyboard navigation, source badges, and API endpoint.
+     - Updated `docs/architecture.md` to document the In-App Calendar architecture, data model provenance (`tasks` + `task_source_items` + `inbox_items`), and read-only query design.
+     - Updated `docs/manual-testing.md` with comprehensive In-App Calendar smoke checklist.
+     - Updated `docs/milestone-status.md` to record Milestone 8 completion.
+- **Why**: Delivers a zero-friction, fully interactive, accessible calendar interface satisfying all 11 user requirements without external dependencies or heavy frontend frameworks, preserving data consistency with zero schema duplication.
+- **Files Affected**:
+  - `app/attention/dates.py`
+  - `app/organizer.py`
+  - `app/schemas.py`
+  - `app/database.py`
+  - `app/main.py`
+  - `app/templates/index.html`
+  - `app/static/styles.css`
+  - `app/static/app.js`
+  - `tests/test_calendar.py`
+  - `README.md`
+  - `docs/architecture.md`
+  - `docs/manual-testing.md`
+  - `docs/milestone-status.md`
+  - `decision.md`
+
+
 
 

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Life Inbox</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261024_04" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261025_01" />
 </head>
 <body>
   <div class="wrap">
@@ -132,6 +132,26 @@
     <div id="briefing" class="panel">
       <span class="muted">Open tasks with timing appear here after analysis.</span>
     </div>
+
+    <h3>In-app calendar</h3>
+    <p class="sub">Month view of dated notes and scheduled tasks.</p>
+    <p id="inAppCalendarStatus" class="status muted" role="status" aria-live="polite"></p>
+    <div id="inAppCalendar" class="panel calendar-panel">
+      <div class="calendar-header">
+        <div class="calendar-nav">
+          <button type="button" id="calPrevBtn" class="secondary cal-btn" aria-label="Previous month" onclick="changeCalendarMonth(-1)">◀</button>
+          <span id="calMonthYear" class="calendar-title" aria-live="polite"></span>
+          <button type="button" id="calNextBtn" class="secondary cal-btn" aria-label="Next month" onclick="changeCalendarMonth(1)">▶</button>
+        </div>
+        <button type="button" id="calTodayBtn" class="secondary cal-today-btn" onclick="jumpCalendarToToday()">Today</button>
+      </div>
+      <div id="calendarGrid" class="calendar-grid" role="grid" aria-label="Month calendar"></div>
+      <div id="calendarDayDetails" class="calendar-day-details" aria-live="polite">
+        <h4 id="calendarDayHeading">Select a day</h4>
+        <div id="calendarEventsList"></div>
+      </div>
+    </div>
+
     <div id="attention" class="dashboard"></div>
     <p id="calendarStatus" class="status muted" role="status" aria-live="polite"></p>
     <div id="calendarPreview" class="panel">
@@ -200,7 +220,7 @@
     <div id="notes"></div>
   </div>
 
-  <script src="/static/pagination_state.js?v=20261024_04"></script>
-  <script src="/static/app.js?v=20261024_04"></script>
+  <script src="/static/pagination_state.js?v=20261025_01"></script>
+  <script src="/static/app.js?v=20261025_01"></script>
 </body>
 </html>
