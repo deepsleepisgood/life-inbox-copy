@@ -61,6 +61,10 @@ ul { padding-left: 22px; }
 .auth-form label { display: grid; gap: 4px; color: #555; font-size: 13px; }
 .auth-form input { min-width: 220px; padding: 8px 10px; border: 1px solid #ccc; border-radius: 8px; }
 .auth-form button { margin: 0; }
+.failure-center { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0; padding: 12px 14px; background: #fff4e5; border: 1px solid #f0c36d; border-radius: 8px; }
+.failure-center h2 { margin: 0 0 4px; }
+.failure-center .sub { margin: 0; }
+.failure-center button { margin: 0; }
 .ask-form { display: grid; gap: 10px; margin: 12px 0; }
 .ask-form input { width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; }
 .ask-examples { display: flex; flex-wrap: wrap; gap: 8px; }

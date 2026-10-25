@@ -23,6 +23,7 @@ from sqlalchemy import (
     func,
     or_,
     select,
+    update,
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -1475,6 +1476,30 @@ def mark_item_processing(item_id: int) -> Optional[dict]:
         item.updated_at = datetime.now(timezone.utc).isoformat()
         session.commit()
         return _item_to_dict(item)
+
+
+def claim_item_for_retry(item_id: int) -> bool:
+    """Atomically claim a non-ready item for one retry worker."""
+    owner_id = require_owner_id()
+    now = datetime.now(timezone.utc).isoformat()
+    with SessionLocal() as session:
+        result = session.execute(
+            update(InboxItemRecord)
+            .where(
+                InboxItemRecord.id == item_id,
+                InboxItemRecord.owner_user_id == owner_id,
+                InboxItemRecord.processing_status.notin_(
+                    (STATUS_READY, STATUS_PROCESSING)
+                ),
+            )
+            .values(
+                processing_status=STATUS_PROCESSING,
+                error_message=None,
+                updated_at=now,
+            )
+        )
+        session.commit()
+        return result.rowcount == 1
 
 
 def complete_url_item_processing(

@@ -199,6 +199,16 @@ function clearItemFilters() {
   loadNotes();
 }
 
+function showFailedItems() {
+  document.getElementById('processingStatusFilter').value = 'failed';
+  updateUrl({processing_status: 'failed'});
+  document.getElementById('rawSavedNotesHeading').scrollIntoView({
+    behavior: 'smooth',
+    block: 'start'
+  });
+  loadNotes();
+}
+
 function changeTaskStatusFilter() {
   const status = document.getElementById('taskStatusFilter').value;
   updateUrl({task_status: status});
@@ -744,7 +754,14 @@ function renderNote(note) {
             {method: 'POST'},
             'Unable to retry capture processing.'
           );
-          root.replaceWith(renderNote(updated));
+          const failedOnlyFilter =
+            document.getElementById('processingStatusFilter').value === 'failed';
+          if (updated.processing_status === 'ready' && failedOnlyFilter) {
+            root.remove();
+            await loadNotes();
+          } else {
+            root.replaceWith(renderNote(updated));
+          }
           const label = captureTypeLabel(note.item_type);
           setStatus(
             'noteStatus',
@@ -1348,6 +1365,17 @@ async function loadNotes(
   const filtered = [...params.keys()].some(
     key => key !== 'limit' && key !== 'offset' && params.get(key)
   );
+  const failureCenterFilter = params.get('processing_status') === 'failed';
+  const hasAdditionalFilters = [...params.keys()].some(
+    key => !['limit', 'offset', 'processing_status'].includes(key) && params.get(key)
+  );
+  const emptyMessage = failureCenterFilter
+    ? hasAdditionalFilters
+      ? 'No failed items match these filters.'
+      : 'No failed items. Nothing needs a retry.'
+    : filtered
+      ? 'No inbox items match these filters.'
+      : 'No saved notes yet. Capture a thought above to get started.';
   const query = params.toString();
 
   if (append) {
@@ -1369,12 +1397,10 @@ async function loadNotes(
     }
 
     if (!append && !notes.length) {
-      root.innerHTML = filtered
-        ? '<div class="panel muted">No inbox items match these filters.</div>'
-        : '<div class="panel muted">No saved notes yet. Capture a thought above to get started.</div>';
+      root.innerHTML = `<div class="panel muted">${emptyMessage}</div>`;
       setStatus(
         'searchStatus',
-        filtered ? 'No results found.' : ''
+        failureCenterFilter ? emptyMessage : filtered ? 'No results found.' : ''
       );
       return true;
     }
@@ -1389,12 +1415,19 @@ async function loadNotes(
     const activeNotes = textNotes.filter(note => !completedIds.has(note.id));
 
     if (!append && !activeNotes.length) {
-      root.innerHTML = filtered
-        ? '<div class="panel muted">No inbox items match these filters.</div>'
-        : '<div class="panel muted">No active saved notes. Capture a thought above or all completed!</div>';
+      const inactiveNotesMessage = failureCenterFilter
+        ? emptyMessage
+        : filtered
+          ? 'No inbox items match these filters.'
+          : 'No active saved notes. Capture a thought above or all completed!';
+      root.innerHTML = `<div class="panel muted">${inactiveNotesMessage}</div>`;
       setStatus(
         'searchStatus',
-        filtered ? 'No results found.' : ''
+        failureCenterFilter
+          ? emptyMessage
+          : filtered
+            ? 'No results found.'
+            : ''
       );
       return true;
     }

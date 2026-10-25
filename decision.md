@@ -415,5 +415,63 @@ Running log of architectural, code, and operational decisions.
 
 
 
+### 2026-10-25 — Markdown Export for Saved Notes
+
+- **What was decided / changed**:
+  1. Added `GET /api/items/export.md` before the dynamic item-detail route. It uses the owner-scoped `list_items_from_db(limit=None, offset=0)` query and returns a `life-inbox-export.md` Markdown attachment.
+  2. Included title, type, creation date, source URL, original filename, raw text, extracted text, and AI description when present. Duplicate text sections are omitted; internal ownership and storage fields are not serialized. The endpoint does not modify stored notes or call external APIs.
+  3. Added an “Export Markdown” link beside the saved-notes search controls.
+  4. Added API tests for response headers and content, completeness beyond 100 notes, internal-field exclusion, and per-user isolation.
+- **Why**: Provides a complete portable export while preserving the existing authentication and owner-scoped data boundary.
+- **Files affected**:
+  - `app/main.py`
+  - `app/templates/index.html`
+  - `tests/test_api.py`
+  - `decision.md`
+
+
+
+
+
+### 2026-10-25 — Failure & Retry Center
+
+- **What was decided / changed**:
+  1. Reuse the existing owner-scoped `GET /api/items?processing_status=failed` list and per-item retry action. Add a visible top-of-page entry point that applies the existing failed filter and scrolls to the existing note list, avoiding duplicate list rendering and retry handlers.
+  2. Reuse persisted `processing_status`, `error_message`, and stored source data. Failed retries continue to update the same item and preserve original upload bytes and saved source/content.
+  3. Add an atomic conditional database update scoped by item ID and current owner, which claims only non-ready, non-processing items. The API responds with conflict when another retry is already processing the item; no schema or dependency change is needed.
+  4. Keep the no-key voice transcription and deterministic analysis fallbacks unchanged.
+  5. Add tests for failed filtering and ownership, foreign-user retry rejection, concurrent retry claiming, retry recovery using the same PDF item/source bytes, repeated failure preservation, and the UI entry point.
+- **Why**: Makes failures discoverable while reusing the established capture lifecycle and preventing overlapping retry workers without adding persistence structures.
+- **Files affected**:
+  - `app/database.py`
+  - `app/main.py`
+  - `app/static/app.js`
+  - `app/static/styles.css`
+  - `app/templates/index.html`
+  - `tests/test_api.py`
+  - `decision.md`
+- **Verification**:
+  - Focused Failure & Retry Center tests: 5 passed.
+  - Full test suite: 123 passed, 7 skipped; pagination-state skips require Node.js.
+
+### 2026-10-25 — Refresh Failed List After Successful Retry
+
+- **What was decided / changed**:
+  1. When retry returns an item with `processing_status="ready"` while the failed-only filter is selected, remove its stale card and refresh through the existing `loadNotes()` path. This retains active filters and rebuilds pagination from the updated server result.
+  2. Keep the atomic owner-scoped claim and reject retries for items already marked `processing`.
+  3. Defer stale-claim recovery. An interrupted worker can leave an item stuck in `processing`; without a lease, heartbeat, or reliable worker-liveness signal, automatically retrying it could overlap a still-running processor and duplicate work or external requests.
+  4. Extend retry and UI regression coverage to verify successful items leave the failed result and the existing list refresh is invoked.
+- **Why**: A successful retry must disappear immediately from the failed-only view, while preserving existing retry ownership and avoiding unsafe recovery of potentially active work.
+- **Files affected**:
+  - `app/static/app.js`
+  - `tests/test_api.py`
+  - `decision.md`
+- **Verification**:
+  - Focused retry tests: 6 passed.
+  - Full test suite: 123 passed, 7 skipped (Node.js-dependent pagination tests).
+
+
+
+
 
 

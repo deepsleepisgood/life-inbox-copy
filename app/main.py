@@ -32,6 +32,7 @@ from app.database import (
     complete_analysis_run,
     complete_item_in_db,
     complete_url_item_processing,
+    claim_item_for_retry,
     confirm_task_timing,
     create_topic_in_db,
     delete_item_from_db,
@@ -674,6 +675,21 @@ def retry_item_processing(item_id: int):
         )
     if item["processing_status"] == "ready":
         return item
+    if item["processing_status"] == "processing":
+        raise HTTPException(
+            status_code=409,
+            detail="This item is already being processed.",
+        )
+    if not claim_item_for_retry(item_id):
+        current = get_item_from_db(item_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="Item not found.")
+        if current["processing_status"] == "ready":
+            return current
+        raise HTTPException(
+            status_code=409,
+            detail="This item is already being processed or could not be retried.",
+        )
     if item["item_type"] == "url":
         return _process_url_item(item_id)
     if item["item_type"] == "pdf":
@@ -709,6 +725,60 @@ def get_items(
             status_code=500,
             detail="Unable to load items. Please try again.",
         ) from exc
+
+
+def _markdown_code_block(value: str) -> str:
+    fence = "```"
+    while fence in value:
+        fence += "`"
+    return f"{fence}text\n{value}\n{fence}"
+
+
+@app.get("/api/items/export.md", response_class=Response)
+def export_items_markdown():
+    try:
+        items = list_items_from_db(limit=None, offset=0)
+    except Exception as exc:
+        logger.exception("Failed to export inbox items")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to export items. Please try again.",
+        ) from exc
+
+    markdown = ["# Life Inbox Export", ""]
+    for item in items:
+        markdown.extend([f"## Note {item['id']}", ""])
+        metadata = (
+            ("Title", "title"),
+            ("Type", "item_type"),
+            ("Created", "created_at"),
+            ("Source URL", "source_url"),
+            ("Original filename", "original_filename"),
+        )
+        for label, key in metadata:
+            value = item.get(key)
+            if value is not None and str(value).strip():
+                one_line_value = str(value).replace("\r", " ").replace("\n", " ")
+                markdown.append(f"- **{label}:** {one_line_value}")
+
+        included_text = set()
+        for label, key in (
+            ("Text", "raw_text"),
+            ("Extracted text", "extracted_text"),
+            ("AI description", "ai_description"),
+        ):
+            value = item.get(key)
+            if not isinstance(value, str) or not value.strip() or value in included_text:
+                continue
+            included_text.add(value)
+            markdown.extend(["", f"### {label}", "", _markdown_code_block(value)])
+        markdown.extend(["", "---", ""])
+
+    return Response(
+        content="\n".join(markdown).rstrip() + "\n",
+        media_type="text/markdown",
+        headers={"Content-Disposition": 'attachment; filename="life-inbox-export.md"'},
+    )
 
 
 @app.get("/api/items/{item_id}", response_model=InboxItem)

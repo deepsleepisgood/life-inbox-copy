@@ -23,6 +23,14 @@
       <p id="authStatus" class="status muted" role="status" aria-live="polite"></p>
     </div>
 
+    <section id="failureCenter" class="failure-center" aria-labelledby="failureCenterHeading">
+      <div>
+        <h2 id="failureCenterHeading">Failure &amp; Retry Center</h2>
+        <p class="sub">Review failed captures and retry them without uploading again.</p>
+      </div>
+      <button type="button" class="secondary" onclick="showFailedItems()">Review failed items</button>
+    </section>
+
     <div class="capture-card">
       <div class="capture-header">
         <label for="noteText" class="capture-title">Quick Capture</label>
@@ -170,7 +178,7 @@
     <p id="taskStatus" class="status muted" role="status" aria-live="polite"></p>
     <div id="tasks"></div>
 
-    <h2>Raw saved notes</h2>
+    <h2 id="rawSavedNotesHeading">Raw saved notes</h2>
     <form id="itemSearchForm" class="search-toolbar" onsubmit="applyItemFilters(event)">
       <label>
         Search
@@ -214,6 +222,7 @@
       <div class="search-actions">
         <button type="submit">Search</button>
         <button type="button" class="secondary" onclick="clearItemFilters()">Clear</button>
+        <a href="/api/items/export.md" download>Export Markdown</a>
       </div>
     </form>
     <p id="searchStatus" class="status muted" role="status" aria-live="polite"></p>
