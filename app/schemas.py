@@ -224,6 +224,24 @@ class CalendarConfirmRequest(BaseModel):
     draft_id: str = Field(min_length=4, max_length=80)
 
 
+class CalendarEvent(BaseModel):
+    id: int  # task_id
+    title: str
+    event_date: str  # YYYY-MM-DD
+    priority: Priority
+    status: TaskStatus
+    timing_text: Optional[str] = None
+    time_of_day: Optional[str] = None
+    timing_confirmed: bool = False
+    due_confidence: Optional[str] = None
+    needs_confirmation: bool = False
+    source_item_id: Optional[int] = None
+    source_item_ids: List[int] = Field(default_factory=list)
+    source_type: Optional[str] = None
+    source_title: Optional[str] = None
+
+
+
 class TopicCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=400)

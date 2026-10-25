@@ -297,4 +297,26 @@ Running log of architectural, code, and operational decisions.
   - `tests/test_calendar.py` (new) or `tests/test_api.py`
   - `README.md`, `docs/architecture.md`, `docs/manual-testing.md`, `docs/milestone-status.md`
 
+---
+
+### 2026-10-25 12:44 IST (07:14 UTC) — Backend Implementation & Test Verification: GET /api/calendar/events
+
+- **What was decided / changed**:
+  1. *Date Parsing Enhancements (`app/attention/dates.py`)*:
+     - Added `_DMY` regex to handle Day-Month dates (e.g. "3 Nov", "15th Dec").
+     - Added `_MONTH_ONLY` regex normalizing month mentions without days (e.g. "sometime in March") to the 1st of that month with `confidence="low"` and `needs_confirmation=True`.
+     - Added `_TIME` regex and `extract_time_of_day()` extracting explicit times (e.g. "10:30am", "4pm") without affecting date normalization.
+  2. *Scheduled Task Extraction in Fallback Organizer (`app/organizer.py`)*:
+     - Updated `_split_action_tasks` and `_extract_timing` so notes containing dates (such as "dentist on 3 Nov") are recognized and generated as scheduled ToDos even without manual action verbs.
+  3. *Schema & Database Storage (`app/schemas.py`, `app/database.py`)*:
+     - Added `CalendarEvent` Pydantic model with fields: `id` (task ID), `title`, `event_date` (`YYYY-MM-DD`), `priority`, `status`, `timing_text`, `time_of_day`, `timing_confirmed`, `due_confidence`, `needs_confirmation`, `source_item_id`, `source_item_ids`, `source_type`, and `source_title`.
+     - Implemented `list_calendar_events_from_db(start_date, end_date)` in `app/database.py` querying `tasks` joined with `task_source_items` and `inbox_items`. Strictly scoped to `require_owner_id()` and date range `due_on >= start_date` and `due_on <= end_date`. Excludes dismissed tasks and retroactively normalizes unnormalized tasks.
+  4. *API Route (`app/main.py`)*:
+     - Added `GET /api/calendar/events` validating `start` and `end` ISO date strings (`start <= end`), returning 400 with helpful errors on malformed dates. Uses stored data only; 0 AI/NVIDIA calls.
+  5. *Automated Test Suite (`tests/test_calendar.py`)*:
+     - Added 6 end-to-end tests covering validation, date range filtering, undated item exclusion, multi-tenant user isolation, ambiguous/confirmed date transitions, completed vs dismissed task statuses, and note edit/delete cascade.
+- **Verification**:
+  - Ran full test suite via `pytest`: **121 passed in 25.76s** (100% green).
+
+
 

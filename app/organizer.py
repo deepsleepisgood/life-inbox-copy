@@ -96,15 +96,21 @@ def _extract_timing(text: str) -> str | None:
     ):
         if phrase in lowered:
             return phrase
+    from app.attention.dates import parse_timing_phrase
+
+    parsed = parse_timing_phrase(text)
+    if parsed.due_date is not None:
+        return text
     return None
 
 
 def _split_action_tasks(text: str, note_id: int, priority: str) -> list[dict]:
-    """One source may yield multiple durable tasks when sentences look actionable."""
+    """One source may yield multiple durable tasks when sentences look actionable or contain dates."""
     action_markers = [
         "call", "buy", "send", "ask", "finish", "submit", "pay", "book",
         "pick up", "prepare", "renew", "follow up", "need to", "remember to",
-        "research", "look into", "order",
+        "research", "look into", "order", "appointment", "dentist", "doctor",
+        "meeting", "flight", "visit", "schedule",
     ]
     chunks = [
         part.strip()
@@ -112,25 +118,32 @@ def _split_action_tasks(text: str, note_id: int, priority: str) -> list[dict]:
         if part and part.strip()
     ]
     todos = []
+    from app.attention.dates import parse_timing_phrase
+
     for chunk in chunks:
-        if any(marker in chunk.lower() for marker in action_markers):
+        timing = _extract_timing(chunk) or _extract_timing(text)
+        is_action = any(marker in chunk.lower() for marker in action_markers)
+        has_date = parse_timing_phrase(chunk).due_date is not None
+        if is_action or has_date:
             todos.append(
                 {
                     "task": chunk,
                     "priority": priority_for_text(chunk),
                     "source_note_ids": [note_id],
-                    "when": _extract_timing(chunk) or _extract_timing(text),
+                    "when": timing or (chunk if has_date else None),
                 }
             )
-    if not todos and any(marker in text.lower() for marker in action_markers):
-        todos.append(
-            {
-                "task": text,
-                "priority": priority,
-                "source_note_ids": [note_id],
-                "when": _extract_timing(text),
-            }
-        )
+    if not todos:
+        has_text_date = parse_timing_phrase(text).due_date is not None
+        if any(marker in text.lower() for marker in action_markers) or has_text_date:
+            todos.append(
+                {
+                    "task": text,
+                    "priority": priority,
+                    "source_note_ids": [note_id],
+                    "when": _extract_timing(text) or (text if has_text_date else None),
+                }
+            )
     return todos
 
 

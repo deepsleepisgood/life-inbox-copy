@@ -1224,6 +1224,68 @@ def set_task_status(task_id: int, task_status: str) -> Optional[dict]:
         return _task_to_dict(session, task)
 
 
+def list_calendar_events_from_db(start_date: str, end_date: str) -> list[dict]:
+    from app.attention.dates import parse_timing_phrase
+
+    owner_id = require_owner_id()
+    with SessionLocal() as session:
+        # Retroactively normalize any tasks that have timing_text but missing due_on
+        unnormalized = session.scalars(
+            select(TaskRecord)
+            .where(TaskRecord.owner_user_id == owner_id)
+            .where(TaskRecord.due_on.is_(None))
+            .where(TaskRecord.timing_text.isnot(None))
+        ).all()
+        if unnormalized:
+            for task in unnormalized:
+                _ensure_task_due_fields(task)
+            session.commit()
+
+        tasks = session.scalars(
+            select(TaskRecord)
+            .where(TaskRecord.owner_user_id == owner_id)
+            .where(TaskRecord.due_on.isnot(None))
+            .where(TaskRecord.due_on >= start_date)
+            .where(TaskRecord.due_on <= end_date)
+            .where(TaskRecord.status.in_([TASK_OPEN, TASK_COMPLETED]))
+            .order_by(TaskRecord.due_on.asc(), TaskRecord.id.asc())
+        ).all()
+
+        events = []
+        for task in tasks:
+            sources = session.scalars(
+                select(InboxItemRecord)
+                .join(TaskSourceItemRecord, TaskSourceItemRecord.item_id == InboxItemRecord.id)
+                .where(TaskSourceItemRecord.task_id == task.id)
+                .order_by(InboxItemRecord.id.asc())
+            ).all()
+
+            source_ids = [s.id for s in sources]
+            primary_source = sources[0] if sources else None
+            parsed = parse_timing_phrase(task.timing_text)
+            needs_confirmation = (not bool(task.timing_confirmed)) and parsed.needs_confirmation
+
+            events.append(
+                {
+                    "id": task.id,
+                    "title": task.text,
+                    "event_date": task.due_on,
+                    "priority": task.priority,
+                    "status": task.status,
+                    "timing_text": task.timing_text,
+                    "time_of_day": parsed.time_of_day,
+                    "timing_confirmed": bool(task.timing_confirmed),
+                    "due_confidence": task.due_confidence or parsed.confidence,
+                    "needs_confirmation": bool(needs_confirmation),
+                    "source_item_id": primary_source.id if primary_source else None,
+                    "source_item_ids": source_ids,
+                    "source_type": primary_source.item_type if primary_source else "text",
+                    "source_title": primary_source.title if primary_source else None,
+                }
+            )
+        return events
+
+
 def add_pdf_item_to_db(
     original_filename: str,
     storage_path: str,

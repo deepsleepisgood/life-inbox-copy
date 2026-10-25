@@ -47,6 +47,7 @@ from app.database import (
     get_note_from_db,
     get_organization_dashboard,
     init_db,
+    list_calendar_events_from_db,
     list_items_from_db,
     list_notes_from_db,
     list_relations_from_db,
@@ -77,6 +78,7 @@ from app.schemas import (
     AskRequest,
     AskResponse,
     CalendarConfirmRequest,
+    CalendarEvent,
     CalendarPreviewRequest,
     ExtractedTextUpdate,
     InboxItem,
@@ -939,6 +941,38 @@ def daily_briefing():
         raise HTTPException(
             status_code=500,
             detail="Unable to load daily briefing. Please try again.",
+        ) from exc
+
+
+@app.get("/api/calendar/events", response_model=List[CalendarEvent])
+def get_calendar_events(
+    start: str = Query(..., description="Start date in YYYY-MM-DD format"),
+    end: str = Query(..., description="End date in YYYY-MM-DD format"),
+):
+    from datetime import date as date_cls
+
+    try:
+        start_d = date_cls.fromisoformat(start.strip())
+        end_d = date_cls.fromisoformat(end.strip())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Dates must be formatted as YYYY-MM-DD.",
+        ) from exc
+
+    if start_d > end_d:
+        raise HTTPException(
+            status_code=400,
+            detail="Start date must not be after end date.",
+        )
+
+    try:
+        return list_calendar_events_from_db(start_d.isoformat(), end_d.isoformat())
+    except Exception as exc:
+        logger.exception("Failed to load calendar events")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to load calendar events. Please try again.",
         ) from exc
 
 
