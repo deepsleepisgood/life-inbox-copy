@@ -257,3 +257,44 @@ Running log of architectural, code, and operational decisions.
   - Executed full test suite with `pytest`: **115 passed in 22.80s** (100% pass rate).
   - Terminated background dev process to keep port 8000 free and clean.
 
+---
+
+### 2026-10-25 12:18 IST (06:48 UTC) — Investigation & Implementation Plan: In-App Calendar for Dated Inbox Items
+
+- **Investigation Findings**:
+  1. *Single Source of Truth for Dates*: `inbox_items` stores unstructured content (text, voice, url, pdf, image) without date fields. `tasks` (`TaskRecord`) stores actionable/dated items with `due_on` (ISO date `YYYY-MM-DD`), `due_confidence` (`high`, `medium`, `low`, `none`), `timing_confirmed` (0 or 1), `timing_text` (original phrase), `status` (`open`, `completed`, `dismissed`), and `owner_user_id`. `task_source_items` links tasks to their source `inbox_items`.
+  2. *Existing Date Parser*: `app/attention/dates.py:parse_timing_phrase` normalizes timing phrases into `due_date`, `confidence`, and `needs_confirmation`. Currently supports ISO, month-day (`Nov 3`), weekdays (`next Friday`), `today`, `tomorrow`, and `in X days`. It lacked day-month (`3 Nov`) and month-only (`sometime in March`), which we will add directly to `parse_timing_phrase` without introducing a second parser.
+  3. *Attention & Calendar Preview*: `get_attention_board` categorizes tasks into buckets (`today`, `upcoming`, `overdue`, `unscheduled`, `snoozed`, `needs_confirmation`). The existing Google Calendar preview adapter (`app/integrations/calendar.py`) is purely a preview/mock-confirm tool for external sync and will remain untouched.
+  4. *Schema & Migration Assessment*: `tasks`, `task_source_items`, and `inbox_items` already provide every needed field (`due_on`, `status`, `priority`, `timing_text`, `timing_confirmed`, `source_item_ids`, `item_type`). No new database table or Alembic migration is necessary, guaranteeing zero data drift and zero dual-write synchronization issues.
+- **Architectural & Design Decisions**:
+  1. *Backend Endpoint*: Implement `GET /api/calendar/events?start=YYYY-MM-DD&end=YYYY-MM-DD` querying `tasks` joined with `task_source_items` and `inbox_items`. Strictly scoped to `require_owner_id()` with date range validation (`start <= end`). No external AI/NVIDIA calls on calendar reads.
+  2. *Timezone & Date Storage*: Dates are stored as `YYYY-MM-DD` (calendar dates). Current date and month boundaries are resolved via `configured_timezone()` (`LIFE_INBOX_TIMEZONE`, defaulting to UTC or `Asia/Kolkata` for IST). Date-only events anchor to the calendar day; if time is detected in `timing_text`, it will be displayed as a time chip.
+  3. *Ambiguous / Relative Dates*: Ambiguous dates (e.g. "next Friday", "sometime in March") are positioned on their normalized date with a distinct unconfirmed style (amber indicator on the grid, `⚠️ Needs confirmation` badge in the day list) and an inline "Confirm" button. Once confirmed, they render as normal confirmed events.
+  4. *Task Lifecycle in Calendar*:
+     - *Deleted notes*: Cascade deletion through `_remove_orphan_tasks()` drops orphan tasks, immediately removing them from the calendar.
+     - *Completed tasks*: Rendered with strikethrough, muted styling, and a `✓ Completed` badge so users can see historical completed events.
+     - *Dismissed tasks*: Excluded from the calendar view to prevent noise.
+  5. *Zero Manual Step & Reactive Ingestion*:
+     - Ingestion pathways (`addNote`, `uploadVoiceFile`, `addUrl`, `addPdf`, `addImage`) already enqueue `autoAnalyzeInbox(createdItem.id)`. When complete, `loadCalendarEvents()` is automatically triggered.
+     - Note edits (`saveNoteEdit` and `saveExtractedTextEdit`) are updated to enqueue `autoAnalyzeInbox(note.id)` and refresh the calendar upon completion.
+     - Note deletion and task status changes refresh the calendar immediately.
+  6. *Frontend & Accessibility*:
+     - Month grid placed directly within the "Attention" section.
+     - Controls: `<` (prev month), `>` (next month), "Today".
+     - Keyboard navigation: Left/Right arrows (day), Up/Down arrows (week), Enter/Space (select day).
+     - Day selection panel: Displays selected date, empty state if no events, or event cards with source badge (`text`, `voice`, `url`, `pdf`, `image`), priority, and a "Jump to note" action that smoothly scrolls to the note and pulses/highlights it.
+     - Responsive mobile grid (<=640px) and consistent status messages.
+- **Files Affected**:
+  - `decision.md`
+  - `app/attention/dates.py`
+  - `app/organizer.py`
+  - `app/database.py`
+  - `app/schemas.py`
+  - `app/main.py`
+  - `app/templates/index.html`
+  - `app/static/styles.css`
+  - `app/static/app.js`
+  - `tests/test_calendar.py` (new) or `tests/test_api.py`
+  - `README.md`, `docs/architecture.md`, `docs/manual-testing.md`, `docs/milestone-status.md`
+
+
