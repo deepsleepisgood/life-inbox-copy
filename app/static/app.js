@@ -824,6 +824,7 @@ function renderNote(note) {
       await loadTasks();
       await loadDashboard();
       await loadAttention();
+      await loadCalendarEvents();
     } catch {
       setStatus('noteStatus', 'Could not complete note.', true);
       completeButton.disabled = false;
@@ -1113,11 +1114,12 @@ async function transitionTask(taskId, action, actions) {
   if (pendingTaskActions.has(taskId)) return;
 
   pendingTaskActions.add(taskId);
-  const buttons = actions.querySelectorAll('button');
+  const buttons = actions ? actions.querySelectorAll('button') : [];
   buttons.forEach(button => {
     button.disabled = true;
   });
   setStatus('taskStatus', 'Updating task…');
+  setStatus('inAppCalendarStatus', 'Updating task…');
 
   try {
     const updated = await fetchJson(
@@ -1137,6 +1139,7 @@ async function transitionTask(taskId, action, actions) {
           setTimeout(() => noteEl.remove(), 300);
         }
       });
+      await loadNotes();
     }
     if (action === 'reopen' && updated.source_item_ids) {
       updated.source_item_ids.forEach(itemId => {
@@ -1150,6 +1153,7 @@ async function transitionTask(taskId, action, actions) {
       reopen: 'Task reopened.'
     };
     setStatus('taskStatus', messages[action]);
+    setStatus('inAppCalendarStatus', messages[action]);
     await loadTasks();
     await loadAttention();
     await loadDashboard();
@@ -1157,6 +1161,11 @@ async function transitionTask(taskId, action, actions) {
   } catch {
     setStatus(
       'taskStatus',
+      'We could not update this task. Please try again.',
+      true
+    );
+    setStatus(
+      'inAppCalendarStatus',
       'We could not update this task. Please try again.',
       true
     );
@@ -2104,21 +2113,18 @@ function renderSelectedDayEvents() {
       doneBtn.className = 'secondary cal-action-btn';
       doneBtn.textContent = 'Mark done';
       doneBtn.onclick = async () => {
-        try {
-          await fetchJson(
-            `/api/tasks/${ev.id}/complete`,
-            {method: 'POST'},
-            'Unable to complete task.'
-          );
-          setStatus('inAppCalendarStatus', 'Task completed.');
-          await loadTasks();
-          await loadAttention();
-          await loadCalendarEvents();
-        } catch {
-          setStatus('inAppCalendarStatus', 'Could not complete task.', true);
-        }
+        await transitionTask(ev.id, 'complete', actionsEl);
       };
       actionsEl.appendChild(doneBtn);
+    } else if (ev.status === 'completed') {
+      const reopenBtn = document.createElement('button');
+      reopenBtn.type = 'button';
+      reopenBtn.className = 'secondary cal-action-btn';
+      reopenBtn.textContent = 'Reopen';
+      reopenBtn.onclick = async () => {
+        await transitionTask(ev.id, 'reopen', actionsEl);
+      };
+      actionsEl.appendChild(reopenBtn);
     }
 
     card.appendChild(actionsEl);

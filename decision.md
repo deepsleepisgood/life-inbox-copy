@@ -375,6 +375,45 @@ Running log of architectural, code, and operational decisions.
   - `docs/milestone-status.md`
   - `decision.md`
 
+---
+
+### 2026-10-25 13:12 IST (07:42 UTC) — Investigation & Plan: Synchronizing Calendar Task Completion with Raw Saved Notes
+
+- **Problem Statement**:
+  - When a user clicks "Mark done" on a calendar event card, the task status transitions to `completed` and the calendar reloads, but the associated source note remains visible in the "Raw saved notes" list.
+- **Root Cause Analysis**:
+  1. In `app/static/app.js:renderSelectedDayEvents`, the calendar card's `doneBtn.onclick` called `fetchJson('/api/tasks/${ev.id}/complete')` directly in an isolated handler instead of using the standard task transition lifecycle.
+  2. It omitted updating `completedNoteIdsCache` with the completed task's source note IDs (`updated.source_item_ids` or `ev.source_item_id`).
+  3. It omitted calling `LifeInboxPagination.afterLoadedNoteDeleted(itemPagination, itemId)`.
+  4. It omitted animating and removing `.note[data-note-id="${itemId}"]` from the DOM, and omitted calling `loadNotes()`.
+  5. In addition, the calendar event card lacked a "Reopen" action for completed tasks (so users could not reopen and restore a note from the calendar view), and `completeNote()` in the note card was missing a trigger to refresh `loadCalendarEvents()`.
+- **Proposed Solution**:
+  1. *Reuse `transitionTask` Lifecycle for Calendar Events*:
+     - Route calendar "Mark done" through `transitionTask(ev.id, 'complete', actionsEl)`.
+     - Route calendar "Reopen" through `transitionTask(ev.id, 'reopen', actionsEl)` for completed events.
+  2. *Ensure Complete Note List Sync*:
+     - Update `transitionTask` to ensure `loadNotes()` is called upon task completion so that the "Raw saved notes" list is guaranteed to re-render in perfect sync with the database, and show the clean empty state ("No active saved notes...") if all notes have been completed.
+     - Also update `inAppCalendarStatus` message when the action originates from the calendar.
+  3. *Bi-directional Sync on Note Card Completion*:
+     - In `renderNote:completeButton`, invoke `loadCalendarEvents()` after completing a note so the calendar immediately reflects the note's completion.
+- **Files Affected**:
+  - `app/static/app.js`
+  - `app/templates/index.html`
+  - `decision.md`
+- **Implementation & Verification**:
+  1. Updated `app/static/app.js`:
+     - Wired calendar "Mark done" and "Reopen" buttons to `transitionTask(ev.id, action, actionsEl)`.
+     - In `transitionTask`, updated `completedNoteIdsCache`, animated `.note` element out of DOM, updated pagination, called `await loadNotes()`, and updated `inAppCalendarStatus`.
+     - In `renderNote:completeButton`, added `await loadCalendarEvents()`.
+  2. Bumped asset query strings to `?v=20261025_02` in `app/templates/index.html`.
+  3. Ran test suite (`pytest -v --tb=short`): **123 passed in 24.53s** (100% green).
+  4. Verified in browser with DevTools:
+     - Selecting Nov 3 event ("dentist on 3 Nov") and clicking "Mark done" transitioned task to completed and immediately removed note #15 from "Raw saved notes".
+     - Clicking "Reopen" on the completed calendar event transitioned task back to open and immediately restored note #15 to "Raw saved notes".
+  5. Process cleanup: Terminated dev server and closed test page.
+
+
+
 
 
 
