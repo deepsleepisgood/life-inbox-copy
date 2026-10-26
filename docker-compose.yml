@@ -19,9 +19,7 @@ services:
       LIFE_INBOX_ENV: beta
       DATABASE_URL: postgresql+psycopg://lifeinbox:lifeinbox@db:5432/lifeinbox
       LIFE_INBOX_UPLOAD_DIR: /data/uploads
-      LIFE_INBOX_SESSION_SECRET: change-me-to-a-long-random-secret-value
-      LIFE_INBOX_ALLOW_DEV_LOGIN: "0"
-      LIFE_INBOX_AUTH_MODE: google_stub
+      LIFE_INBOX_AUTH_MODE: password
       LIFE_INBOX_TIMEZONE: UTC
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}

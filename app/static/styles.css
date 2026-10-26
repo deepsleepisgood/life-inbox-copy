@@ -80,6 +80,16 @@ ul { padding-left: 22px; }
   .topic-form input { min-width: 100%; }
 }
 
+/* Auth: account bar in the app */
+[hidden] { display: none !important; }
+.auth-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.auth-actions button { margin-top: 0; }
+.account-settings { margin-top: 8px; }
+.account-settings summary { cursor: pointer; color: #0b7285; font-weight: 600; }
+
+.legal { background: white; border: 1px solid #e5e7eb; border-radius: 12px; padding: 24px 32px; line-height: 1.55; }
+.draft-banner { background: #fff4e5; border: 1px solid #f5c26b; border-radius: 8px; padding: 10px 12px; color: #7a4b00; }
+
 /* Modern Capture Card & Input Layout */
 .capture-card {
   background: #ffffff;

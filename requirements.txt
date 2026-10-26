@@ -4,6 +4,7 @@ uvicorn
 pydantic
 sqlalchemy
 alembic
+argon2-cffi
 openai
 requests
 pytest

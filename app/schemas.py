@@ -339,3 +339,45 @@ class AskResponse(BaseModel):
     citations: List[AskCitation]
     answer_kind: Literal["grounded_summary", "model_generated"]
     mode: Literal["llm_grounded", "extractive_fallback"] = "extractive_fallback"
+
+
+class RegisterRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=256)
+    display_name: str = Field(default="", max_length=100)
+    confirm_adult: bool = False
+    accept_terms: bool = False
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=1, max_length=254)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=1, max_length=256)
+
+
+class AuthUser(BaseModel):
+    id: int
+    email: Optional[str] = None
+    display_name: str
+    auth_provider: str
+    created_at: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str = Field(min_length=1, max_length=254)
+
+
+class ForgotPasswordResponse(BaseModel):
+    status: Literal["code_sent_if_account_exists"] = "code_sent_if_account_exists"
+    resend_after_seconds: int
+    delivery: str
+
+
+class ResetPasswordRequest(BaseModel):
+    email: str = Field(min_length=1, max_length=254)
+    code: str = Field(min_length=1, max_length=20)
+    new_password: str = Field(min_length=1, max_length=256)

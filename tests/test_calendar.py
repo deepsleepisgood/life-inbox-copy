@@ -5,6 +5,8 @@ from datetime import date, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.auth_helpers import login, register
+
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
@@ -31,6 +33,7 @@ def client(tmp_path, monkeypatch):
 
     assert database.engine.url.database == str(test_db_path)
     with TestClient(main.app) as test_client:
+        register(test_client, "owner@example.com", display_name="Owner")
         yield test_client
 
     database.engine.dispose()
@@ -103,10 +106,7 @@ def test_calendar_events_date_range_and_undated_exclusion(client):
 
 def test_calendar_events_user_isolation(client):
     # Alice logs in and saves a dated note
-    alice = client.post(
-        "/api/auth/dev-login",
-        json={"email": "alice@calendar.test", "display_name": "Alice"},
-    ).json()
+    alice = register(client, "alice@calendar.test", display_name="Alice")
     alice_item = client.post("/api/items", json={"raw_text": "dentist on 3 Nov"}).json()
     client.post("/api/analyze")
 
@@ -115,10 +115,7 @@ def test_calendar_events_user_isolation(client):
     assert alice_events[0]["source_item_id"] == alice_item["id"]
 
     # Bob logs in
-    bob = client.post(
-        "/api/auth/dev-login",
-        json={"email": "bob@calendar.test", "display_name": "Bob"},
-    ).json()
+    bob = register(client, "bob@calendar.test", display_name="Bob")
     assert bob["id"] != alice["id"]
 
     # Bob's calendar should be completely empty

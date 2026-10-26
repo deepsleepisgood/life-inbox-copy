@@ -3,8 +3,32 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
+from urllib.parse import urlsplit
+
+from app.auth import (
+    SESSION_COOKIE,
+    AuthError,
+    authenticate_password,
+    change_password,
+    clear_session_cookie,
+    end_all_sessions,
+    end_session,
+    register_user,
+    request_password_reset,
+    reset_password_with_code,
+    resolve_session,
+    set_session_cookie,
+    start_session,
+)
 
 from app.capture.image_extract import process_image_bytes, validate_image_upload
 from app.capture.pdf_extract import extract_pdf_text, validate_pdf_upload
@@ -20,6 +44,7 @@ from app.capture.storage import (
 from app.capture.url_fetch import fetch_url, validate_public_http_url
 from app.capture.voice_extract import process_voice_bytes, validate_audio_upload
 from app.database import (
+    NotAuthenticatedError,
     add_image_item_to_db,
     add_item_to_db,
     add_note_to_db,
@@ -76,6 +101,13 @@ from app.organizer import analyze_inbox_with_openai, validate_analysis_result
 from app.retrieval.ask import build_grounded_answer
 from app.retrieval.search import search_passages
 from app.schemas import (
+    AuthUser,
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
+    LoginRequest,
+    PasswordChangeRequest,
+    RegisterRequest,
+    ResetPasswordRequest,
     AskRequest,
     AskResponse,
     CalendarConfirmRequest,
@@ -163,31 +195,117 @@ app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 init_db()
 
 
-@app.middleware("http")
-async def bind_owner_from_session(request, call_next):
-    from app.auth import SESSION_COOKIE, parse_session_token
+PUBLIC_PATHS = frozenset(
+    {
+        "/login",
+        "/privacy",
+        "/terms",
+        "/api/health",
+        "/api/auth/register",
+        "/api/auth/login",
+        "/api/auth/logout",
+        "/api/auth/password/forgot",
+        "/api/auth/password/reset",
+    }
+)
+PUBLIC_PREFIXES = ("/static/",)
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _is_public_path(path: str) -> bool:
+    return path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)
+
+
+def _is_cross_site_write(request: Request) -> bool:
+    """Block state-changing API calls that come from another site."""
+    if request.method not in UNSAFE_METHODS:
+        return False
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        return True
+    origin = request.headers.get("origin")
+    if not origin:
+        return False
+    host = request.headers.get("host", "")
+    return urlsplit(origin).netloc.lower() != host.lower()
+
+
+def _apply_security_headers(request: Request, response: Response) -> None:
     from app.config import load_config
-    from app.database import (
-        get_or_create_default_owner_id,
-        set_current_owner_id,
+
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault(
+        "Referrer-Policy", "strict-origin-when-cross-origin"
     )
+    path = request.url.path
+    if path.startswith("/api/") or path in {"/", "/login"}:
+        response.headers.setdefault("Cache-Control", "no-store")
+    elif path.startswith("/static/"):
+        # Revalidate on every load (cheap 304 via ETag) so a browser never
+        # runs an old script against a newer page after an update.
+        response.headers.setdefault("Cache-Control", "no-cache")
+    if load_config(strict=False).environment in {"beta", "production"}:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+
+
+@app.middleware("http")
+async def auth_gate(request: Request, call_next):
+    """Every route except the public ones needs a valid session.
+
+    Logged-out API calls get 401; logged-out page loads go to /login.
+    """
+    from app.database import set_current_owner_id
+
+    path = request.url.path
+    if path.startswith("/api/") and _is_cross_site_write(request):
+        response = JSONResponse(
+            {"detail": "Cross-site request blocked."}, status_code=403
+        )
+        _apply_security_headers(request, response)
+        return response
 
     token = request.cookies.get(SESSION_COOKIE)
-    owner_id = parse_session_token(token) if token else None
-    if owner_id is None:
-        config = load_config(strict=False)
-        if config.environment == "local":
-            owner_id = get_or_create_default_owner_id()
-    set_current_owner_id(owner_id)
+    user = await run_in_threadpool(resolve_session, token) if token else None
+    request.state.user = user
+
+    if user is None and not _is_public_path(path):
+        if path.startswith("/api/"):
+            response = JSONResponse(
+                {"detail": "Authentication required."}, status_code=401
+            )
+        else:
+            response = RedirectResponse("/login", status_code=302)
+        if token:
+            clear_session_cookie(response)
+        _apply_security_headers(request, response)
+        return response
+
+    set_current_owner_id(user["id"] if user else None)
     try:
         response = await call_next(request)
     finally:
         set_current_owner_id(None)
-    if request.url.path == "/" or request.url.path.startswith("/static"):
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
+    _apply_security_headers(request, response)
     return response
+
+
+@app.exception_handler(AuthError)
+async def auth_error_handler(request: Request, exc: AuthError):
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+
+@app.exception_handler(NotAuthenticatedError)
+async def not_authenticated_handler(request: Request, exc: NotAuthenticatedError):
+    return JSONResponse({"detail": "Authentication required."}, status_code=401)
+
+
+def _current_user(request: Request) -> dict:
+    user = getattr(request.state, "user", None)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return user
 
 
 @app.get("/api/health")
@@ -208,50 +326,91 @@ def health():
         return {"status": "degraded", "error": str(exc)}
 
 
-@app.get("/api/auth/me")
-def auth_me(request: Request):
-    from app.auth import SESSION_COOKIE, parse_session_token
-    from app.database import get_or_create_default_owner_id, get_user_by_id
-
-    token = request.cookies.get(SESSION_COOKIE)
-    user_id = parse_session_token(token) if token else None
-    if user_id is not None:
-        user = get_user_by_id(user_id)
-        if user is not None:
-            return user
-    # Local anonymous maps to default owner identity for display only.
-    return get_user_by_id(get_or_create_default_owner_id())
+def _start_fresh_session(request: Request, response: Response, user: dict) -> None:
+    # Always issue a new token on sign-in (prevents session fixation).
+    end_session(request.cookies.get(SESSION_COOKIE))
+    token = start_session(
+        user["id"],
+        auth_method="password",
+        user_agent=request.headers.get("user-agent"),
+    )
+    set_session_cookie(response, token)
 
 
-@app.post("/api/auth/dev-login")
-def auth_dev_login(payload: dict, response: Response):
-    from app.auth import dev_login_user, set_session_cookie
-
-    email = str(payload.get("email", "")).strip()
-    display_name = payload.get("display_name")
-    user = dev_login_user(email, display_name=display_name)
-    set_session_cookie(response, user["id"])
+@app.post(
+    "/api/auth/register",
+    response_model=AuthUser,
+    status_code=status.HTTP_201_CREATED,
+)
+def auth_register(payload: RegisterRequest, request: Request, response: Response):
+    user = register_user(
+        email=payload.email,
+        password=payload.password,
+        display_name=payload.display_name,
+        confirm_adult=payload.confirm_adult,
+        accept_terms=payload.accept_terms,
+    )
+    _start_fresh_session(request, response, user)
     return user
 
 
-@app.post("/api/auth/logout")
-def auth_logout(response: Response):
-    from app.auth import clear_session_cookie
+@app.post("/api/auth/login", response_model=AuthUser)
+def auth_login(payload: LoginRequest, request: Request, response: Response):
+    user = authenticate_password(payload.email, payload.password)
+    _start_fresh_session(request, response, user)
+    return user
 
+
+@app.get("/api/auth/me", response_model=AuthUser)
+def auth_me(request: Request):
+    return _current_user(request)
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request, response: Response):
+    end_session(request.cookies.get(SESSION_COOKIE))
     clear_session_cookie(response)
     return {"status": "logged_out"}
 
 
-@app.get("/api/auth/google/start")
-def auth_google_start():
-    """Stub only — real Google OAuth is not activated in this build."""
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Google sign-in stub only. Real OAuth consent is not enabled. "
-            "Use /api/auth/dev-login for private-beta local testing."
-        ),
+@app.post("/api/auth/logout-all")
+def auth_logout_all(request: Request, response: Response):
+    user = _current_user(request)
+    revoked = end_all_sessions(user["id"])
+    clear_session_cookie(response)
+    return {"status": "logged_out", "sessions_revoked": revoked}
+
+
+@app.post(
+    "/api/auth/password/forgot",
+    response_model=ForgotPasswordResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def auth_forgot_password(payload: ForgotPasswordRequest):
+    return request_password_reset(payload.email)
+
+
+@app.post("/api/auth/password/reset", response_model=AuthUser)
+def auth_reset_password(
+    payload: ResetPasswordRequest, request: Request, response: Response
+):
+    user = reset_password_with_code(
+        payload.email, payload.code, payload.new_password
     )
+    _start_fresh_session(request, response, user)
+    return user
+
+
+@app.post("/api/auth/password/change")
+def auth_change_password(payload: PasswordChangeRequest, request: Request):
+    user = _current_user(request)
+    revoked = change_password(
+        user["id"],
+        current_password=payload.current_password,
+        new_password=payload.new_password,
+        keep_token=request.cookies.get(SESSION_COOKIE),
+    )
+    return {"status": "password_changed", "other_sessions_revoked": revoked}
 
 
 def _process_url_item(item_id: int) -> dict:
@@ -1408,6 +1567,27 @@ def analyze_inbox(item_id: Optional[int] = Query(None)):
         ) from exc
 
 
+def _template(name: str) -> str:
+    return (APP_DIR / "templates" / name).read_text(encoding="utf-8")
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return (APP_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+    return _template("index.html")
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    if getattr(request.state, "user", None) is not None:
+        return RedirectResponse("/", status_code=302)
+    return _template("login.html")
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_page():
+    return _template("privacy.html")
+
+
+@app.get("/terms", response_class=HTMLResponse)
+def terms_page():
+    return _template("terms.html")

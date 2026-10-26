@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#dff1f5" />
+  <title>Enter your Life · Life Inbox</title>
+  <link rel="stylesheet" href="/static/login.css" />
+</head>
+<body class="calm">
+  <div class="sky" aria-hidden="true">
+    <span class="orb orb-powder"></span>
+    <span class="orb orb-lavender"></span>
+    <span class="orb orb-rose"></span>
+  </div>
+
+  <div class="scene">
+    <section class="welcome" aria-labelledby="welcomeTitle">
+      <h1 id="welcomeTitle" class="wordmark">
+        <svg class="logo" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="logoFill" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#8fd3dd" />
+              <stop offset="0.55" stop-color="#7a68b5" />
+              <stop offset="1" stop-color="#463a7c" />
+            </linearGradient>
+          </defs>
+          <rect x="2" y="6" width="56" height="56" rx="16" fill="url(#logoFill)" />
+          <path d="M14 36h10l3 6h10l3-6h10v10a4 4 0 0 1-4 4H18a4 4 0 0 1-4-4z" fill="#fff" opacity="0.95" />
+          <path d="M18 22h24M18 29h16" stroke="#fff" stroke-width="3.5" stroke-linecap="round" opacity="0.8" />
+          <circle cx="54" cy="10" r="8" fill="#c8414d" stroke="#f3eefb" stroke-width="3" />
+        </svg>
+        <span class="wordmark-text"><span class="wm-life">Life</span> Inbox</span>
+      </h1>
+
+      <p class="tagline">Everything on your mind, <em>sorted.</em></p>
+      <p class="welcome-lead">
+        Drop in a thought, a link, a PDF, a photo or a voice note.
+        Life Inbox turns it into what's next.
+      </p>
+
+      <ol class="flow" aria-label="How Life Inbox works">
+        <li class="flow-step">
+          <span class="flow-icon fi-capture" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
+          </span>
+          <span class="flow-text"><strong>Capture</strong>anything, in seconds</span>
+        </li>
+        <li class="flow-step">
+          <span class="flow-icon fi-organize" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h6" /></svg>
+          </span>
+          <span class="flow-text"><strong>Organize</strong>into topics &amp; tasks</span>
+        </li>
+        <li class="flow-step">
+          <span class="flow-icon fi-ask" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4.5-4.5" /></svg>
+          </span>
+          <span class="flow-text"><strong>Ask</strong>answers, with sources</span>
+        </li>
+      </ol>
+
+      <p class="affirmation" id="affirmation" aria-live="polite">Your mind is for having ideas, not holding them.</p>
+
+      <ul class="qualities" aria-label="Today you are">
+        <li class="quality q-free">Free</li>
+        <li class="quality q-ambitious">Ambitious</li>
+        <li class="quality q-creative">Creative</li>
+      </ul>
+    </section>
+
+    <main class="card" aria-labelledby="cardTitle">
+      <h2 id="cardTitle" class="card-title">Enter your <span class="life">Life</span></h2>
+      <p id="cardLead" class="card-lead">Welcome back. Everything is right where you left it.</p>
+
+      <div class="tabs" role="tablist" aria-label="Choose how to continue">
+        <button type="button" role="tab" id="tabSignIn" aria-controls="signInForm" aria-selected="true" class="tab active">Enter your Life</button>
+        <button type="button" role="tab" id="tabRegister" aria-controls="registerForm" aria-selected="false" class="tab">Create New Life</button>
+      </div>
+
+      <form id="signInForm" class="stack" role="tabpanel" aria-labelledby="tabSignIn" novalidate>
+        <label>
+          Email
+          <input id="signInEmail" type="email" autocomplete="username" maxlength="254" placeholder="you@example.com" required />
+        </label>
+        <label>
+          Password
+          <span class="password-field">
+            <input id="signInPassword" type="password" autocomplete="current-password" maxlength="128" required />
+            <button type="button" class="link-button toggle-password" data-target="signInPassword" aria-label="Show password">Show</button>
+          </span>
+        </label>
+        <button type="submit" class="primary" id="signInButton">Enter your Life</button>
+        <button type="button" class="link-button" id="forgotPasswordButton">Forgot password?</button>
+      </form>
+
+      <section id="forgotPanel" class="stack" hidden aria-labelledby="cardTitle">
+        <form id="forgotRequestForm" class="stack" novalidate>
+          <p class="hint">No worries. Enter your account email and we'll send a 6-digit code that works for 10 minutes.</p>
+          <label>
+            Email
+            <input id="forgotEmail" type="email" autocomplete="username" maxlength="254" required />
+          </label>
+          <button type="submit" class="primary" id="forgotSendButton">Send code</button>
+        </form>
+
+        <form id="forgotResetForm" class="stack" hidden novalidate>
+          <p id="forgotSentInfo" class="hint"></p>
+          <label>
+            6-digit code
+            <input id="forgotCode" class="code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required />
+          </label>
+          <label>
+            New password
+            <span class="password-field">
+              <input id="forgotNewPassword" type="password" autocomplete="new-password" minlength="10" maxlength="128" required />
+              <button type="button" class="link-button toggle-password" data-target="forgotNewPassword" aria-label="Show password">Show</button>
+            </span>
+            <span class="hint">At least 10 characters.</span>
+          </label>
+          <label>
+            Confirm new password
+            <input id="forgotNewPasswordConfirm" type="password" autocomplete="new-password" maxlength="128" required />
+          </label>
+          <button type="submit" class="primary" id="forgotResetButton">Reset password</button>
+          <button type="button" class="link-button" id="forgotResendButton" disabled>Resend code</button>
+        </form>
+
+        <button type="button" class="link-button" id="forgotBackButton">Back to Enter your Life</button>
+      </section>
+
+      <form id="registerForm" class="stack" role="tabpanel" aria-labelledby="tabRegister" hidden novalidate>
+        <label>
+          Name
+          <input id="registerName" type="text" autocomplete="name" maxlength="100" placeholder="What should we call you?" />
+        </label>
+        <label>
+          Email
+          <input id="registerEmail" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com" required />
+        </label>
+        <label>
+          Password
+          <span class="password-field">
+            <input id="registerPassword" type="password" autocomplete="new-password" minlength="10" maxlength="128" required aria-describedby="passwordHint" />
+            <button type="button" class="link-button toggle-password" data-target="registerPassword" aria-label="Show password">Show</button>
+          </span>
+          <span id="passwordHint" class="hint">At least 10 characters. A short sentence works well.</span>
+        </label>
+        <label>
+          Confirm password
+          <input id="registerPasswordConfirm" type="password" autocomplete="new-password" maxlength="128" required />
+        </label>
+        <label class="check">
+          <input id="registerAdult" type="checkbox" required />
+          <span>I am 18 years or older.</span>
+        </label>
+        <label class="check">
+          <input id="registerTerms" type="checkbox" required />
+          <span>I agree to the <a href="/terms" target="_blank" rel="noopener">Terms</a> and have read the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span>
+        </label>
+        <button type="submit" class="primary" id="registerButton">Create New Life</button>
+      </form>
+
+      <p id="authMessage" class="message" role="alert" aria-live="assertive"></p>
+
+      <p class="card-foot">
+        Your notes stay private to you.
+        <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a>
+      </p>
+    </main>
+  </div>
+  <script src="/static/auth.js"></script>
+</body>
+</html>

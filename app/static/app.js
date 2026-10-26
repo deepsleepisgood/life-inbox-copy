@@ -218,9 +218,15 @@ function changeTaskStatusFilter() {
 async function fetchJson(url, options, friendlyError) {
   let response;
   try {
-    response = await fetch(url, options);
+    response = await fetch(url, {credentials: 'same-origin', ...options});
   } catch {
     throw new Error(friendlyError);
+  }
+
+  if (response.status === 401) {
+    // Session ended (signed out, expired or revoked): show only the login screen.
+    leaveToLogin();
+    throw new Error('Signed out.');
   }
 
   if (!response.ok) {
@@ -1745,46 +1751,76 @@ async function loadAuthUser() {
   try {
     const user = await fetchJson('/api/auth/me', {}, 'Unable to load session.');
     document.getElementById('authUser').textContent =
-      `Signed in as ${user.display_name} <${user.email}> (${user.auth_provider})`;
+      `Signed in as ${user.display_name} <${user.email}>`;
   } catch {
-    document.getElementById('authUser').textContent = 'Not signed in';
+    document.getElementById('authUser').textContent = 'Session unavailable.';
   }
 }
 
-async function devLogin(event) {
-  event.preventDefault();
-  const email = document.getElementById('devLoginEmail').value.trim();
-  if (!email) return;
-  try {
-    const user = await fetchJson(
-      '/api/auth/dev-login',
-      {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({email})
-      },
-      'Unable to sign in.'
-    );
-    setStatus('authStatus', `Signed in as ${user.email}`);
-    await loadAuthUser();
-    await loadNotes();
-    await loadTasks();
-    await loadAttention();
-    await loadDashboard();
-    await loadCalendarEvents();
-  } catch {
-    setStatus('authStatus', 'Sign-in failed (dev login may be disabled).', true);
-  }
+function leaveToLogin() {
+  // Drop everything rendered for this user before navigating away.
+  document.body.innerHTML = '';
+  window.location.replace('/login');
 }
 
 async function logoutSession() {
   try {
     await fetchJson('/api/auth/logout', {method: 'POST'}, 'Unable to sign out.');
-    setStatus('authStatus', 'Signed out.');
-    await loadAuthUser();
-    await loadCalendarEvents();
   } catch {
-    setStatus('authStatus', 'Sign-out failed.', true);
+    // The cookie may already be gone; the login page is still the right place.
+  }
+  leaveToLogin();
+}
+
+async function logoutAllSessions() {
+  if (!confirm('Sign out of Life Inbox on every device?')) return;
+  try {
+    await fetchJson('/api/auth/logout-all', {method: 'POST'}, 'Unable to sign out.');
+  } catch {
+    // Fall through to the login page either way.
+  }
+  leaveToLogin();
+}
+
+async function changePassword(event) {
+  event.preventDefault();
+  const currentPassword = document.getElementById('currentPassword');
+  const newPassword = document.getElementById('newPassword');
+  const confirmPassword = document.getElementById('newPasswordConfirm');
+  if (newPassword.value !== confirmPassword.value) {
+    setStatus('authStatus', 'New passwords do not match.', true);
+    return;
+  }
+  const button = document.getElementById('changePasswordButton');
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/auth/password/change', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        current_password: currentPassword.value,
+        new_password: newPassword.value
+      })
+    });
+    if (response.status === 401) {
+      leaveToLogin();
+      return;
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = typeof data.detail === 'string' ? data.detail : 'Unable to change password.';
+      setStatus('authStatus', detail, true);
+      return;
+    }
+    currentPassword.value = '';
+    newPassword.value = '';
+    confirmPassword.value = '';
+    setStatus('authStatus', 'Password updated. Other devices have been signed out.');
+  } catch {
+    setStatus('authStatus', 'Unable to change password.', true);
+  } finally {
+    button.disabled = false;
   }
 }
 

@@ -81,12 +81,21 @@ Open http://127.0.0.1:8000
 - [ ] Analyze inbox includes ready URL items
 - [ ] Private/local URLs (127.0.0.1, localhost) rejected before fetch
 
-## Multi-user / auth smoke (Milestone 6+)
+## Login / multi-user smoke (Milestone 7+)
 
-- [ ] Dev login with email A; create a note; appears in list
-- [ ] Dev login with email B; note from A is not visible; delete of A’s id returns 404
-- [ ] Sign out clears session cookie
-- [ ] `/api/auth/google/start` returns 501 stub (no real OAuth)
+- [ ] Opening `/` while signed out redirects to `/login`; no inbox content is shown
+- [ ] Create account with email A (password 10+ chars, 18+ and Terms ticked); lands in inbox
+- [ ] Mismatched confirm password and short password show clear errors
+- [ ] Create a note; Sign out returns to `/login`; browser Back does not show the note
+- [ ] Wrong password shows "Incorrect email or password."; correct password signs in and the note is there
+- [ ] Create account B; note from A is not visible; delete of A’s id returns 404
+- [ ] Change password: wrong current password rejected; after success old password fails, new works
+- [ ] "Sign out everywhere" signs out another browser that was signed in
+- [ ] Five wrong passwords lock sign-in for 15 minutes
+- [ ] Forgot password: request a code; it prints in the server terminal (console mode)
+- [ ] Wrong code shows attempts left; correct code + new password signs you in
+- [ ] After reset the old password fails, other devices are signed out, the code can't be reused
+- [ ] Requesting a second code within 60 s is refused; only the newest code works
 - [ ] `/api/health` returns status + environment metadata
 - [ ] Spoofing `X-User-Id` does not change ownership
 

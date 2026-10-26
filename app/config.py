@@ -17,16 +17,21 @@ class ConfigError(RuntimeError):
     pass
 
 
+EMAIL_PROVIDERS = frozenset({"console", "fake"})
+DEV_ONLY_EMAIL_PROVIDERS = frozenset({"console", "fake"})
+LOCAL_OTP_PEPPER = "local-only-otp-pepper-do-not-use-in-beta"
+
+
 @dataclass(frozen=True)
 class AppConfig:
     database_url: str
     upload_dir: str
-    session_secret: str
-    auth_mode: str  # dev | google_stub
+    auth_mode: str  # password
     environment: str  # local | beta | production
     max_upload_mb: int
-    allow_dev_login: bool
     timezone: str
+    email_provider: str  # console | fake (smtp/resend later)
+    otp_pepper: str
     nvidia_api_key: str
     nvidia_base_url: str
     nvidia_llm_model: str
@@ -41,10 +46,6 @@ class AppConfig:
         return self.database_url.startswith("postgresql")
 
 
-def _truthy(name: str, default: str = "") -> bool:
-    return os.getenv(name, default).strip().lower() in {"1", "true", "yes"}
-
-
 def load_config(*, strict: Optional[bool] = None) -> AppConfig:
     environment = os.getenv("LIFE_INBOX_ENV", "local").strip() or "local"
     database_url = os.getenv(
@@ -52,11 +53,14 @@ def load_config(*, strict: Optional[bool] = None) -> AppConfig:
         "sqlite:///./data/life_inbox.db",
     ).strip()
     upload_dir = os.getenv("LIFE_INBOX_UPLOAD_DIR", "./data/uploads").strip()
-    session_secret = os.getenv("LIFE_INBOX_SESSION_SECRET", "").strip()
-    auth_mode = os.getenv("LIFE_INBOX_AUTH_MODE", "dev").strip() or "dev"
+    auth_mode = os.getenv("LIFE_INBOX_AUTH_MODE", "password").strip() or "password"
     timezone = os.getenv("LIFE_INBOX_TIMEZONE", "UTC").strip() or "UTC"
     max_upload_mb = int(os.getenv("LIFE_INBOX_MAX_UPLOAD_MB", "5") or "5")
-    allow_dev_login = _truthy("LIFE_INBOX_ALLOW_DEV_LOGIN", "1")
+    email_provider = (
+        os.getenv("LIFE_INBOX_EMAIL_PROVIDER", "console").strip().lower()
+        or "console"
+    )
+    otp_pepper = os.getenv("LIFE_INBOX_OTP_PEPPER", "").strip()
     nvidia_api_key = os.getenv("NVIDIA_API_KEY", "").strip()
     if nvidia_api_key and not nvidia_api_key.startswith("nvapi-") and not nvidia_api_key.startswith("Bearer "):
         nvidia_api_key = f"nvapi-{nvidia_api_key}"
@@ -86,37 +90,43 @@ def load_config(*, strict: Optional[bool] = None) -> AppConfig:
         )
     if not upload_dir:
         errors.append("LIFE_INBOX_UPLOAD_DIR is required.")
-    if strict and len(session_secret) < 32:
-        errors.append(
-            "LIFE_INBOX_SESSION_SECRET must be at least 32 characters in "
-            "beta/production."
-        )
-    if auth_mode not in {"dev", "google_stub"}:
-        errors.append("LIFE_INBOX_AUTH_MODE must be 'dev' or 'google_stub'.")
-    if environment in {"beta", "production"} and allow_dev_login and auth_mode == "dev":
-        errors.append(
-            "Dev login must be disabled in beta/production "
-            "(set LIFE_INBOX_ALLOW_DEV_LOGIN=0)."
-        )
+    if auth_mode != "password":
+        errors.append("LIFE_INBOX_AUTH_MODE must be 'password'.")
     if max_upload_mb < 1 or max_upload_mb > 50:
         errors.append("LIFE_INBOX_MAX_UPLOAD_MB must be between 1 and 50.")
+    if email_provider not in EMAIL_PROVIDERS:
+        errors.append(
+            "LIFE_INBOX_EMAIL_PROVIDER must be one of: "
+            + ", ".join(sorted(EMAIL_PROVIDERS))
+        )
+    if environment in {"beta", "production"}:
+        if email_provider in DEV_ONLY_EMAIL_PROVIDERS:
+            errors.append(
+                "LIFE_INBOX_EMAIL_PROVIDER must send real email in "
+                "beta/production (console/fake are local only)."
+            )
+        if len(otp_pepper) < 32:
+            errors.append(
+                "LIFE_INBOX_OTP_PEPPER must be at least 32 random characters "
+                "in beta/production."
+            )
 
     if errors and strict:
         raise ConfigError("; ".join(errors))
 
-    if not session_secret:
-        # Local/dev only fallback — never for strict environments.
-        session_secret = "local-dev-only-session-secret-change-me"
+    if not otp_pepper:
+        # Local-only fallback; strict environments must set a real secret.
+        otp_pepper = LOCAL_OTP_PEPPER
 
     return AppConfig(
         database_url=database_url,
         upload_dir=upload_dir,
-        session_secret=session_secret,
         auth_mode=auth_mode,
         environment=environment,
         max_upload_mb=max_upload_mb,
-        allow_dev_login=allow_dev_login,
         timezone=timezone,
+        email_provider=email_provider,
+        otp_pepper=otp_pepper,
         nvidia_api_key=nvidia_api_key,
         nvidia_base_url=nvidia_base_url,
         nvidia_llm_model=nvidia_llm_model,
@@ -130,10 +140,10 @@ def config_warnings(config: AppConfig) -> list[str]:
         warnings.append(
             "NVIDIA_API_KEY is not configured; running in deterministic fallback mode."
         )
-    if config.session_secret.startswith("local-dev-only"):
-        warnings.append("Using default local session secret.")
-    if config.allow_dev_login:
-        warnings.append("Dev login is enabled.")
     if config.is_sqlite and config.environment != "local":
         warnings.append("SQLite in use outside local environment.")
+    if config.email_provider == "console":
+        warnings.append("Email is printed to the server terminal (console mode).")
+    if config.otp_pepper == LOCAL_OTP_PEPPER:
+        warnings.append("Using the local-only OTP pepper.")
     return warnings

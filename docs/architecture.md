@@ -22,7 +22,7 @@
 | `app/retrieval/` | Keyword + local TF-IDF search, grounded Ask My Inbox (NVIDIA NIM) |
 | `app/attention/` | Timing parse, attention buckets, briefing helpers |
 | `app/integrations/` | Replaceable Calendar adapter (mock / preview-only Google) |
-| `app/auth.py` / `app/config.py` | Session auth + startup config validation |
+| `app/auth.py` / `app/config.py` | Password login (argon2id), server-side sessions (`auth_sessions`), startup config validation |
 | `app/storage_backend.py` | Upload storage abstraction (local FS default) |
 | `app/templates` / `app/static` | Browser UI |
 
