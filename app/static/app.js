@@ -4,6 +4,7 @@ const pendingNoteActions = new Set();
 const pendingTaskActions = new Set();
 const completedNoteIdsCache = new Set();
 const analysisQueue = [];
+let notificationSettings = null;
 
 async function getCompletedNoteIds() {
   try {
@@ -96,6 +97,201 @@ function setButtonBusy(buttonId, busy, busyLabel, idleLabel) {
   button.disabled = busy;
   button.textContent = busy ? busyLabel : idleLabel;
   button.setAttribute('aria-busy', String(busy));
+}
+
+function decodeApplicationServerKey(encodedKey) {
+  const padded = encodedKey + '='.repeat((4 - encodedKey.length % 4) % 4);
+  const base64 = padded.replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(base64);
+  return Uint8Array.from(binary, character => character.charCodeAt(0));
+}
+
+function updateNotificationPrompt() {
+  const prompt = document.getElementById('notificationPrompt');
+  const message = document.getElementById('notificationPromptMessage');
+  const button = document.getElementById('enableNotificationPrompt');
+  const enabledCheckbox = document.getElementById('notificationsEnabled');
+  const supported =
+    'Notification' in window
+    && 'serviceWorker' in navigator
+    && 'PushManager' in window;
+  const permission = supported ? Notification.permission : 'unsupported';
+
+  if (!notificationSettings || notificationSettings.enabled) {
+    prompt.hidden = true;
+    return;
+  }
+  prompt.hidden = false;
+
+  if (!supported) {
+    message.textContent =
+      'This browser does not support background task notifications.';
+    button.hidden = true;
+  } else if (!notificationSettings.push_available) {
+    message.textContent =
+      'Task notifications are not configured on this server yet.';
+    button.hidden = true;
+  } else if (permission === 'denied') {
+    message.textContent =
+      'Notifications are blocked for this site in your browser. Open site settings for 127.0.0.1, change Notifications to Allow, then reload this page.';
+    button.hidden = true;
+  } else {
+    message.textContent =
+      'Get a daily reminder for tasks due today and an extra alert for eligible High-priority tasks. Choose Enable to allow this browser and turn them on.';
+    button.hidden = false;
+    button.disabled = enabledCheckbox.disabled;
+  }
+}
+
+function enableNotificationsFromPrompt(event) {
+  document.getElementById('notificationsEnabled').checked = true;
+  saveNotificationSettings(event);
+}
+
+async function loadNotificationSettings() {
+  try {
+    notificationSettings = await fetchJson(
+      '/api/notifications/settings',
+      undefined,
+      'Unable to load notification settings.'
+    );
+    document.getElementById('notificationsEnabled').checked =
+      notificationSettings.enabled;
+    document.getElementById('dailyDigestTime').value =
+      notificationSettings.daily_digest_time || '08:00';
+    document.getElementById('notificationTimezone').value =
+      notificationSettings.timezone || 'UTC';
+    document.getElementById('includeUnscheduledPrompt').checked =
+      notificationSettings.include_unscheduled_prompt;
+
+    if (!notificationSettings.configured) {
+      const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (browserTimezone) {
+        document.getElementById('notificationTimezone').value = browserTimezone;
+      }
+    }
+
+    const supported =
+      'Notification' in window
+      && 'serviceWorker' in navigator
+      && 'PushManager' in window;
+    document.getElementById('notificationsEnabled').disabled =
+      (!supported || !notificationSettings.push_available)
+      && !notificationSettings.enabled;
+    updateNotificationPrompt();
+    if (!supported) {
+      setStatus(
+        'notificationStatus',
+        'This browser does not support background push notifications.'
+      );
+    } else if (!notificationSettings.push_available) {
+      setStatus(
+        'notificationStatus',
+        'Push delivery is not configured on the server yet.'
+      );
+    } else {
+      setStatus(
+        'notificationStatus',
+        notificationSettings.enabled
+          ? `Notifications are enabled (${notificationSettings.subscription_count} device(s)).`
+          : 'Notifications are off. Enable them here to receive task alerts.'
+      );
+    }
+  } catch {
+    setStatus(
+      'notificationStatus',
+      'Could not load notification settings. Reload to try again.',
+      true
+    );
+  }
+}
+
+async function saveNotificationSettings(event) {
+  event.preventDefault();
+  const enabled = document.getElementById('notificationsEnabled').checked;
+  const submitButton = document.getElementById('saveNotificationSettings');
+  const time = document.getElementById('dailyDigestTime').value;
+  const timezoneName = document.getElementById('notificationTimezone').value.trim();
+
+  submitButton.disabled = true;
+  setStatus('notificationStatus', 'Saving notification settings…');
+  try {
+    if (enabled) {
+      if (
+        !('Notification' in window)
+        || !('serviceWorker' in navigator)
+        || !('PushManager' in window)
+      ) {
+        throw new Error('This browser does not support push notifications.');
+      }
+      if (!notificationSettings?.vapid_public_key) {
+        throw new Error('Push delivery is not configured on the server yet.');
+      }
+      let permission = Notification.permission;
+      if (permission === 'default') {
+        permission = await Notification.requestPermission();
+      }
+      if (permission !== 'granted') {
+        throw new Error(
+          'Notifications are blocked for this site. Open site settings for 127.0.0.1, change Notifications to Allow, then reload this page.'
+        );
+      }
+
+      const registration = await navigator.serviceWorker.register(
+        '/service-worker.js'
+      );
+      let subscription = await registration.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: decodeApplicationServerKey(
+            notificationSettings.vapid_public_key
+          )
+        });
+      }
+      await fetchJson(
+        '/api/notifications/subscriptions',
+        {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(subscription.toJSON())
+        },
+        'Unable to register this browser for notifications.'
+      );
+    }
+
+    await fetchJson(
+      '/api/notifications/settings',
+      {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          enabled,
+          daily_digest_time: time,
+          timezone: timezoneName,
+          include_unscheduled_prompt:
+            document.getElementById('includeUnscheduledPrompt').checked
+        })
+      },
+      'Unable to save notification settings. Check the time and timezone.'
+    );
+    await loadNotificationSettings();
+    setStatus(
+      'notificationStatus',
+      enabled
+        ? 'Notifications enabled. Daily and eligible High-priority task alerts are ready.'
+        : 'Notifications disabled.'
+    );
+  } catch (error) {
+    setStatus(
+      'notificationStatus',
+      error.message || 'Could not save notification settings.',
+      true
+    );
+    updateNotificationPrompt();
+  } finally {
+    submitButton.disabled = false;
+  }
 }
 
 function itemFilterParams() {
@@ -1200,6 +1396,60 @@ async function transitionTask(taskId, action, actions) {
   }
 }
 
+
+async function createQuickTask(event) {
+  event.preventDefault();
+
+  const form = document.getElementById('quickTaskForm');
+  const textInput = document.getElementById('quickTaskText');
+  const priorityInput = document.getElementById('quickTaskPriority');
+  const dueInput = document.getElementById('quickTaskDueOn');
+  const submitButton = document.getElementById('quickTaskSubmit');
+
+  const text = textInput.value.trim();
+
+  if (!text) {
+    setStatus('taskStatus', 'Please enter a task title.', true);
+    textInput.focus();
+    return;
+  }
+
+  submitButton.disabled = true;
+  submitButton.textContent = 'Adding…';
+
+  try {
+    await fetchJson(
+      '/api/tasks',
+      {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          text,
+          priority: priorityInput.value,
+          due_on: dueInput.value || null
+        })
+      },
+      'Unable to create task.'
+    );
+
+    form.reset();
+    priorityInput.value = 'Medium';
+
+    await loadTasks();
+    await loadAttention();
+    await loadDashboard();
+
+    setStatus('taskStatus', 'Task added successfully.');
+    textInput.focus();
+  } catch {
+    setStatus('taskStatus', 'Could not add task. Please try again.', true);
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = 'Add task';
+  }
+}
+
+
 async function loadTasks() {
   const filter = document.getElementById('taskStatusFilter').value;
   try {
@@ -2238,6 +2488,7 @@ loadTopics();
 loadDashboard();
 loadAttention();
 loadCalendarEvents();
+loadNotificationSettings();
 
 window.addEventListener('popstate', () => {
   syncControlsFromUrl();

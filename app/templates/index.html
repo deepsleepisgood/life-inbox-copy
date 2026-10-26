@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Life Inbox</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261025_02" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261026_01" />
 </head>
 <body>
   <div class="wrap">
@@ -38,6 +38,20 @@
       </details>
       <p id="authStatus" class="status muted" role="status" aria-live="polite"></p>
     </div>
+
+    <section id="notificationPrompt" class="notification-prompt" hidden
+             aria-labelledby="notificationPromptHeading">
+      <div>
+        <h2 id="notificationPromptHeading">Turn on task notifications</h2>
+        <p id="notificationPromptMessage">
+          Get a daily reminder for tasks due today and an extra alert for eligible High-priority tasks.
+        </p>
+      </div>
+      <button id="enableNotificationPrompt" type="button"
+              onclick="enableNotificationsFromPrompt(event)">
+        Enable notifications
+      </button>
+    </section>
 
     <section id="failureCenter" class="failure-center" aria-labelledby="failureCenterHeading">
       <div>
@@ -182,7 +196,57 @@
       <span class="muted">Calendar previews require confirmation and never write to Google without owner approval.</span>
     </div>
 
+    <h3>Task notifications</h3>
+    <p class="sub">Opt in to a daily due-task digest and one-hour alerts for AI-classified High-priority tasks with an explicit time.</p>
+    <form id="notificationSettingsForm" class="notification-settings"
+          onsubmit="saveNotificationSettings(event)">
+      <label class="notification-toggle">
+        <input id="notificationsEnabled" type="checkbox" />
+        Enable browser notifications on this device
+      </label>
+      <label>
+        Daily digest time
+        <input id="dailyDigestTime" type="time" value="08:00" required />
+      </label>
+      <label>
+        Timezone (IANA)
+        <input id="notificationTimezone" type="text" maxlength="64"
+               placeholder="Asia/Kolkata" required />
+      </label>
+      <label class="notification-toggle">
+        <input id="includeUnscheduledPrompt" type="checkbox" />
+        Include an optional prompt to review undated tasks
+      </label>
+      <button id="saveNotificationSettings" type="submit">Save notification settings</button>
+    </form>
+    <p id="notificationStatus" class="status muted" role="status" aria-live="polite"></p>
+
     <h2>Tasks</h2>
+    
+<form id="quickTaskForm" class="quick-task-form"
+      onsubmit="createQuickTask(event)">
+  <label for="quickTaskText">Task</label>
+  <input
+    id="quickTaskText"
+    type="text"
+    maxlength="500"
+    placeholder="What do you need to do?"
+    required
+  />
+
+  <label for="quickTaskPriority">Priority</label>
+  <select id="quickTaskPriority">
+    <option value="High">High</option>
+    <option value="Medium" selected>Medium</option>
+    <option value="Low">Low</option>
+  </select>
+
+  <label for="quickTaskDueOn">Due date (optional)</label>
+  <input id="quickTaskDueOn" type="date" />
+
+  <button id="quickTaskSubmit" type="submit">Add task</button>
+</form>
+
     <div class="task-toolbar">
       <label for="taskStatusFilter">Show</label>
       <select id="taskStatusFilter" onchange="changeTaskStatusFilter()">
@@ -246,6 +310,6 @@
   </div>
 
   <script src="/static/pagination_state.js?v=20261025_01"></script>
-  <script src="/static/app.js?v=20261025_02"></script>
+  <script src="/static/app.js?v=20261026_02"></script>
 </body>
 </html>

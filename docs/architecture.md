@@ -35,7 +35,10 @@
 - `item_insights` — AI category/title/priority/tags/rationale/topic plus user overrides
 - `item_relations` — duplicate / near-duplicate / related pairs (dismissible)
 - `tasks` / `task_source_items` — durable tasks; multiple tasks per source allowed;
-  AI vs confirmed timing distinguished
+  AI vs confirmed timing distinguished, with normalized optional local due time
+- `notification_preferences`, `push_subscriptions`, and
+  `notification_deliveries` — per-user Web Push opt-in, browser subscriptions,
+  and idempotent delivery/retry history
 
 ## Analysis freshness
 
@@ -82,6 +85,15 @@ OCR/vision/transcription adapters degrade gracefully when not configured
   `due_on` + `due_confidence` power Today/Upcoming/Overdue/Unscheduled views.
 - Ambiguous timing sets `needs_confirmation` until the user confirms.
 - Snooze / reminder fields are local only (`snoozed_until`, `reminder_at`).
+- Opted-in browser push sends one daily digest for open tasks due on the user's
+  local date. AI-linked High-priority tasks with an explicit, unambiguous time
+  also receive a push one hour before. Date-only tasks are never assigned a
+  guessed time. Undated tasks are not scheduled; users may opt into a simple
+  count prompt in the digest.
+- `python -m app.notifications.dispatcher` is the one-shot scheduler entry
+  point and must run once per minute in deployments. The Compose
+  `notifications` service provides a local minute-loop worker. Push requires
+  HTTPS, browser permission, and VAPID keys.
 - Calendar integrations: `GET /api/calendar/status`, `POST /api/calendar/preview`,
   `POST /api/calendar/confirm`. Mock confirm stores a local receipt.
   Google provider is preview-only; confirm is blocked (no OAuth / no writes).

@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+import uuid
 
 _current_owner_id: ContextVar[Optional[int]] = ContextVar(
     "life_inbox_owner_id", default=None
@@ -284,6 +285,7 @@ class TaskRecord(Base):
     ai_timing_text = Column(Text, nullable=True)
     timing_confirmed = Column(Integer, nullable=False, default=0)
     due_on = Column(Text, nullable=True)
+    due_time = Column(Text, nullable=True)
     due_confidence = Column(Text, nullable=True)
     snoozed_until = Column(Text, nullable=True)
     reminder_at = Column(Text, nullable=True)
@@ -309,6 +311,79 @@ class CalendarActionReceiptRecord(Base):
     status = Column(Text, nullable=False)
     payload_json = Column(Text, nullable=False)
     created_at = Column(Text, nullable=False)
+
+
+class NotificationPreferenceRecord(Base):
+    __tablename__ = "notification_preferences"
+
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    enabled = Column(Integer, nullable=False, default=0, server_default="0")
+    daily_digest_time = Column(
+        Text, nullable=False, default="08:00", server_default="08:00"
+    )
+    timezone = Column(Text, nullable=False, default="UTC", server_default="UTC")
+    include_unscheduled_prompt = Column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    updated_at = Column(Text, nullable=False)
+
+
+class PushSubscriptionRecord(Base):
+    __tablename__ = "push_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("endpoint", name="uq_push_subscriptions_endpoint"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    endpoint = Column(Text, nullable=False)
+    p256dh = Column(Text, nullable=False)
+    auth = Column(Text, nullable=False)
+    created_at = Column(Text, nullable=False)
+    updated_at = Column(Text, nullable=False)
+
+
+class NotificationDeliveryRecord(Base):
+    __tablename__ = "notification_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_key",
+            name="uq_notification_deliveries_idempotency_key",
+        ),
+        {"sqlite_autoincrement": True},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    task_id = Column(
+        Integer,
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    kind = Column(Text, nullable=False)
+    local_date = Column(Text, nullable=False)
+    idempotency_key = Column(Text, nullable=False)
+    status = Column(Text, nullable=False)
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(Text, nullable=False)
+    updated_at = Column(Text, nullable=False)
+    delivered_at = Column(Text, nullable=True)
+    last_error = Column(Text, nullable=True)
 
 
 class TaskSourceItemRecord(Base):
@@ -1270,7 +1345,10 @@ def complete_analysis_run(
                         break
 
             if task is None:
-                from app.attention.dates import parse_timing_phrase
+                from app.attention.dates import (
+                    normalize_time_of_day,
+                    parse_timing_phrase,
+                )
 
                 parsed_timing = parse_timing_phrase(todo.get("when"))
                 task = TaskRecord(
@@ -1280,6 +1358,7 @@ def complete_analysis_run(
                     ai_timing_text=todo["when"],
                     timing_confirmed=0,
                     due_on=parsed_timing.normalized_iso,
+                    due_time=normalize_time_of_day(todo.get("when")),
                     due_confidence=parsed_timing.confidence,
                     status=TASK_OPEN,
                     dedup_key=dedup_key,
@@ -1297,7 +1376,10 @@ def complete_analysis_run(
                         )
                     )
             else:
-                from app.attention.dates import parse_timing_phrase
+                from app.attention.dates import (
+                    normalize_time_of_day,
+                    parse_timing_phrase,
+                )
 
                 task.text = todo["task"]
                 task.priority = todo["priority"]
@@ -1306,6 +1388,7 @@ def complete_analysis_run(
                     task.timing_text = todo["when"]
                     parsed_timing = parse_timing_phrase(todo.get("when"))
                     task.due_on = parsed_timing.normalized_iso
+                    task.due_time = normalize_time_of_day(todo.get("when"))
                     task.due_confidence = parsed_timing.confidence
                 task.dedup_key = dedup_key
                 task.updated_at = completed_at
@@ -1516,13 +1599,16 @@ def _task_dedup_key(source_item_ids: list[int], task_text: str = "") -> str:
 
 def _ensure_task_due_fields(task: TaskRecord) -> None:
     """Normalize due_on from timing_text when missing."""
-    from app.attention.dates import parse_timing_phrase
+    from app.attention.dates import normalize_time_of_day, parse_timing_phrase
 
+    if task.due_time is None:
+        task.due_time = normalize_time_of_day(task.timing_text)
     if task.due_on and task.due_confidence:
         return
     parsed = parse_timing_phrase(task.timing_text)
     task.due_on = parsed.normalized_iso
     task.due_confidence = parsed.confidence
+    task.due_time = task.due_time or normalize_time_of_day(task.timing_text)
 
 
 def _task_to_dict(session, task: TaskRecord) -> dict:
@@ -1540,6 +1626,7 @@ def _task_to_dict(session, task: TaskRecord) -> dict:
         "ai_timing_text": task.ai_timing_text,
         "timing_confirmed": bool(task.timing_confirmed),
         "due_on": task.due_on,
+        "due_time": task.due_time,
         "due_confidence": task.due_confidence,
         "snoozed_until": task.snoozed_until,
         "reminder_at": task.reminder_at,
@@ -1548,6 +1635,46 @@ def _task_to_dict(session, task: TaskRecord) -> dict:
         "created_at": task.created_at,
         "updated_at": task.updated_at,
     }
+
+
+def create_manual_task(
+    text: str,
+    priority: str,
+    due_on: Optional[str] = None,
+) -> dict:
+    """Create a task directly, without requiring an inbox source item."""
+    cleaned_text = text.strip()
+    if not cleaned_text:
+        raise ValueError("Task text cannot be empty.")
+
+    owner_id = require_owner_id()
+    now = datetime.now(timezone.utc).isoformat()
+
+    dedup_key = hashlib.sha256(
+        f"manual:{owner_id}:{uuid.uuid4().hex}".encode("utf-8")
+    ).hexdigest()
+
+    with SessionLocal() as session:
+        task = TaskRecord(
+            text=cleaned_text,
+            priority=priority,
+            timing_text=due_on,
+            ai_timing_text=None,
+            timing_confirmed=1 if due_on else 0,
+            due_on=due_on,
+            due_confidence="high" if due_on else None,
+            snoozed_until=None,
+            reminder_at=None,
+            status=TASK_OPEN,
+            dedup_key=dedup_key,
+            owner_user_id=owner_id,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(task)
+        session.flush()
+        session.commit()
+        return _task_to_dict(session, task)
 
 
 def list_tasks_from_db(status_filter: str = TASK_OPEN) -> list[dict]:
@@ -1910,7 +2037,7 @@ def confirm_task_timing(
     task_id: int,
     timing_text: Optional[str] = None,
 ) -> Optional[dict]:
-    from app.attention.dates import parse_timing_phrase
+    from app.attention.dates import normalize_time_of_day, parse_timing_phrase
 
     owner_id = require_owner_id()
     with SessionLocal() as session:
@@ -1921,6 +2048,7 @@ def confirm_task_timing(
             task.timing_text = timing_text
         parsed = parse_timing_phrase(task.timing_text)
         task.due_on = parsed.normalized_iso
+        task.due_time = normalize_time_of_day(task.timing_text)
         task.due_confidence = "high" if parsed.due_date else parsed.confidence
         task.timing_confirmed = 1
         task.updated_at = datetime.now(timezone.utc).isoformat()
@@ -2050,6 +2178,297 @@ def get_daily_briefing() -> dict:
             f"{len(board['upcoming'])} upcoming."
         ),
     }
+
+
+def get_notification_settings() -> dict:
+    from app.attention.dates import configured_timezone
+
+    user_id = require_owner_id()
+    with SessionLocal() as session:
+        preferences = session.get(NotificationPreferenceRecord, user_id)
+        subscription_count = session.scalar(
+            select(func.count(PushSubscriptionRecord.id)).where(
+                PushSubscriptionRecord.user_id == user_id
+            )
+        )
+        return {
+            "configured": preferences is not None,
+            "enabled": bool(preferences.enabled) if preferences else False,
+            "daily_digest_time": (
+                preferences.daily_digest_time if preferences else "08:00"
+            ),
+            "timezone": (
+                preferences.timezone
+                if preferences
+                else configured_timezone().key
+            ),
+            "include_unscheduled_prompt": (
+                bool(preferences.include_unscheduled_prompt)
+                if preferences
+                else False
+            ),
+            "subscription_count": int(subscription_count or 0),
+        }
+
+
+def save_notification_settings(
+    *,
+    enabled: bool,
+    daily_digest_time: str,
+    timezone_name: str,
+    include_unscheduled_prompt: bool,
+) -> dict:
+    user_id = require_owner_id()
+    now = datetime.now(timezone.utc).isoformat()
+    with SessionLocal() as session:
+        preferences = session.get(NotificationPreferenceRecord, user_id)
+        subscription_count = session.scalar(
+            select(func.count(PushSubscriptionRecord.id)).where(
+                PushSubscriptionRecord.user_id == user_id
+            )
+        )
+        if enabled and not subscription_count:
+            raise ValueError(
+                "Enable browser notifications on this device before saving."
+            )
+        if preferences is None:
+            preferences = NotificationPreferenceRecord(
+                user_id=user_id,
+                updated_at=now,
+            )
+            session.add(preferences)
+        preferences.enabled = int(enabled)
+        preferences.daily_digest_time = daily_digest_time
+        preferences.timezone = timezone_name
+        preferences.include_unscheduled_prompt = int(
+            include_unscheduled_prompt
+        )
+        preferences.updated_at = now
+        session.commit()
+    return get_notification_settings()
+
+
+def save_push_subscription(
+    *,
+    endpoint: str,
+    p256dh: str,
+    auth: str,
+) -> None:
+    user_id = require_owner_id()
+    now = datetime.now(timezone.utc).isoformat()
+    with SessionLocal() as session:
+        subscription = session.scalar(
+            select(PushSubscriptionRecord).where(
+                PushSubscriptionRecord.endpoint == endpoint
+            )
+        )
+        if subscription is not None and subscription.user_id != user_id:
+            raise ValueError(
+                "This browser subscription is associated with another account."
+            )
+        if subscription is None:
+            subscription = PushSubscriptionRecord(
+                user_id=user_id,
+                endpoint=endpoint,
+                p256dh=p256dh,
+                auth=auth,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(subscription)
+        else:
+            subscription.p256dh = p256dh
+            subscription.auth = auth
+            subscription.updated_at = now
+        session.commit()
+
+
+def remove_push_subscription(endpoint: str) -> bool:
+    user_id = require_owner_id()
+    with SessionLocal() as session:
+        subscription = session.scalar(
+            select(PushSubscriptionRecord).where(
+                PushSubscriptionRecord.endpoint == endpoint,
+                PushSubscriptionRecord.user_id == user_id,
+            )
+        )
+        if subscription is None:
+            return False
+        session.delete(subscription)
+        session.commit()
+        return True
+
+
+def list_notification_users() -> list[dict]:
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(NotificationPreferenceRecord).where(
+                NotificationPreferenceRecord.enabled == 1
+            )
+        ).scalars().all()
+        return [
+            {
+                "user_id": row.user_id,
+                "daily_digest_time": row.daily_digest_time,
+                "timezone": row.timezone,
+                "include_unscheduled_prompt": bool(
+                    row.include_unscheduled_prompt
+                ),
+            }
+            for row in rows
+        ]
+
+
+def list_notification_tasks(user_id: int) -> list[dict]:
+    with SessionLocal() as session:
+        tasks = session.scalars(
+            select(TaskRecord)
+            .where(
+                TaskRecord.owner_user_id == user_id,
+                TaskRecord.status == TASK_OPEN,
+            )
+            .order_by(TaskRecord.due_on.asc(), TaskRecord.id.asc())
+        ).all()
+        result = []
+        for task in tasks:
+            _ensure_task_due_fields(task)
+            source_count = session.scalar(
+                select(func.count(TaskSourceItemRecord.item_id)).where(
+                    TaskSourceItemRecord.task_id == task.id
+                )
+            )
+            result.append(
+                {
+                    "id": task.id,
+                    "text": task.text,
+                    "priority": task.priority,
+                    "due_on": task.due_on,
+                    "due_time": task.due_time,
+                    "timing_text": task.timing_text,
+                    "timing_confirmed": bool(task.timing_confirmed),
+                    "due_confidence": task.due_confidence,
+                    "snoozed_until": task.snoozed_until,
+                    "ai_generated": bool(source_count),
+                }
+            )
+        return result
+
+
+def list_push_subscriptions(user_id: int) -> list[dict]:
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(PushSubscriptionRecord).where(
+                PushSubscriptionRecord.user_id == user_id
+            )
+        ).all()
+        return [
+            {
+                "id": row.id,
+                "endpoint": row.endpoint,
+                "p256dh": row.p256dh,
+                "auth": row.auth,
+            }
+            for row in rows
+        ]
+
+
+def delete_push_subscription_by_id(subscription_id: int) -> None:
+    with SessionLocal() as session:
+        row = session.get(PushSubscriptionRecord, subscription_id)
+        if row is not None:
+            session.delete(row)
+            session.commit()
+
+
+def claim_notification_delivery(
+    *,
+    user_id: int,
+    task_id: Optional[int],
+    kind: str,
+    local_date: str,
+    idempotency_key: str,
+    now: datetime,
+) -> bool:
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+    now_iso = now.astimezone(timezone.utc).isoformat()
+    insert_factory = (
+        pg_insert if engine.dialect.name == "postgresql" else sqlite_insert
+    )
+    with SessionLocal() as session:
+        statement = insert_factory(NotificationDeliveryRecord).values(
+            user_id=user_id,
+            task_id=task_id,
+            kind=kind,
+            local_date=local_date,
+            idempotency_key=idempotency_key,
+            status="sending",
+            attempts=1,
+            created_at=now_iso,
+            updated_at=now_iso,
+        )
+        result = session.execute(
+            statement.on_conflict_do_nothing(
+                index_elements=["idempotency_key"]
+            )
+        )
+        if result.rowcount == 1:
+            session.commit()
+            return True
+
+        record = session.scalar(
+            select(NotificationDeliveryRecord)
+            .where(
+                NotificationDeliveryRecord.idempotency_key == idempotency_key
+            )
+            .with_for_update()
+        )
+        if record is None or record.status == "sent" or record.attempts >= 5:
+            session.rollback()
+            return False
+
+        retry_after = now - timedelta(minutes=5)
+        try:
+            updated_at = datetime.fromisoformat(record.updated_at)
+        except ValueError:
+            updated_at = now
+        if record.status == "sending" and updated_at > retry_after:
+            session.rollback()
+            return False
+        if record.status == "failed" and updated_at > retry_after:
+            session.rollback()
+            return False
+
+        record.status = "sending"
+        record.attempts += 1
+        record.updated_at = now_iso
+        record.last_error = None
+        session.commit()
+        return True
+
+
+def finish_notification_delivery(
+    idempotency_key: str,
+    *,
+    delivered: bool,
+    now: datetime,
+    error: Optional[str] = None,
+) -> None:
+    now_iso = now.astimezone(timezone.utc).isoformat()
+    with SessionLocal() as session:
+        record = session.scalar(
+            select(NotificationDeliveryRecord).where(
+                NotificationDeliveryRecord.idempotency_key == idempotency_key
+            )
+        )
+        if record is None:
+            raise ValueError("Notification delivery claim was lost.")
+        record.status = "sent" if delivered else "failed"
+        record.updated_at = now_iso
+        record.delivered_at = now_iso if delivered else None
+        record.last_error = None if delivered else (error or "Delivery failed.")[:1000]
+        session.commit()
 
 
 def save_calendar_receipt(

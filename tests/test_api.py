@@ -68,6 +68,8 @@ def test_home_page_loads(client):
     assert "<title>Life Inbox</title>" in response.text
     assert "Analyze Entire Inbox with AI" in response.text
     assert 'href="/api/items/export.md" download>Export Markdown</a>' in response.text
+    assert 'id="notificationPrompt"' in response.text
+    assert 'onclick="enableNotificationsFromPrompt(event)"' in response.text
 
 
 def test_failure_retry_center_entrypoint_uses_existing_failed_filter(client):
@@ -111,6 +113,68 @@ def test_health_check(client):
     assert payload["status"] == "ok"
     assert "environment" in payload
     assert "database" in payload
+
+
+def test_notification_preferences_are_saved_per_user(client, monkeypatch):
+    monkeypatch.delenv("LIFE_INBOX_VAPID_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LIFE_INBOX_VAPID_PRIVATE_KEY", raising=False)
+
+    defaults = client.get("/api/notifications/settings")
+    assert defaults.status_code == 200
+    assert defaults.json()["enabled"] is False
+    assert defaults.json()["push_available"] is False
+
+    disabled = client.put(
+        "/api/notifications/settings",
+        json={
+            "enabled": False,
+            "daily_digest_time": "09:15",
+            "timezone": "America/Los_Angeles",
+            "include_unscheduled_prompt": True,
+        },
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["daily_digest_time"] == "09:15"
+    assert disabled.json()["timezone"] == "America/Los_Angeles"
+    assert disabled.json()["include_unscheduled_prompt"] is True
+
+    rejected_enable = client.put(
+        "/api/notifications/settings",
+        json={
+            "enabled": True,
+            "daily_digest_time": "09:15",
+            "timezone": "America/Los_Angeles",
+            "include_unscheduled_prompt": True,
+        },
+    )
+    assert rejected_enable.status_code == 503
+
+
+def test_push_subscription_is_user_scoped_and_not_exposed(client, monkeypatch):
+    monkeypatch.setenv("LIFE_INBOX_VAPID_PUBLIC_KEY", "public")
+    monkeypatch.setenv("LIFE_INBOX_VAPID_PRIVATE_KEY", "private")
+    subscription = {
+        "endpoint": "https://fcm.googleapis.com/fcm/send/test-subscription",
+        "keys": {"p256dh": "public-encryption-key", "auth": "auth-secret"},
+    }
+
+    registered = client.post(
+        "/api/notifications/subscriptions",
+        json=subscription,
+    )
+    assert registered.status_code == 201
+    assert registered.json() == {"registered": True}
+    settings = client.get("/api/notifications/settings").json()
+    assert settings["subscription_count"] == 1
+    assert "endpoint" not in settings
+    assert "auth-secret" not in settings.values()
+
+    register(client, "notifications-other@example.com", display_name="Other")
+    conflict = client.post(
+        "/api/notifications/subscriptions",
+        json=subscription,
+    )
+    assert conflict.status_code == 422
 
 
 def test_create_and_list_canonical_text_item(client):
@@ -2379,3 +2443,110 @@ def test_single_note_analysis_and_dashboard_completion_exclusion(client, monkeyp
         }
         assert item1["id"] not in active_analysis_ids
 
+
+def test_quick_add_task_without_due_date(client):
+    response = client.post(
+        "/api/tasks",
+        json={
+            "text": "Prepare AI assignment",
+            "priority": "High",
+        },
+    )
+
+    assert response.status_code == 201
+    task = response.json()
+    assert task["text"] == "Prepare AI assignment"
+    assert task["priority"] == "High"
+    assert task["status"] == "open"
+    assert task["due_on"] is None
+    assert task["source_item_ids"] == []
+
+    tasks = client.get("/api/tasks").json()
+    assert task in tasks
+
+
+def test_quick_add_task_with_due_date(client):
+    response = client.post(
+        "/api/tasks",
+        json={
+            "text": "Submit assignment",
+            "priority": "Medium",
+            "due_on": "2026-11-15",
+        },
+    )
+
+    assert response.status_code == 201
+    task = response.json()
+    assert task["due_on"] == "2026-11-15"
+    assert task["timing_confirmed"] is True
+
+    board = client.get("/api/attention")
+    assert board.status_code == 200
+
+
+def test_quick_add_task_rejects_invalid_input(client):
+    empty_title = client.post(
+        "/api/tasks",
+        json={"text": "   ", "priority": "Medium"},
+    )
+    assert empty_title.status_code == 422
+
+    invalid_priority = client.post(
+        "/api/tasks",
+        json={"text": "Valid task", "priority": "Urgent"},
+    )
+    assert invalid_priority.status_code == 422
+
+
+def test_quick_add_task_without_due_date(client):
+    response = client.post(
+        "/api/tasks",
+        json={
+            "text": "Prepare AI assignment",
+            "priority": "High",
+        },
+    )
+
+    assert response.status_code == 201
+    task = response.json()
+    assert task["text"] == "Prepare AI assignment"
+    assert task["priority"] == "High"
+    assert task["status"] == "open"
+    assert task["due_on"] is None
+    assert task["source_item_ids"] == []
+
+    tasks = client.get("/api/tasks").json()
+    assert task in tasks
+
+
+def test_quick_add_task_with_due_date(client):
+    response = client.post(
+        "/api/tasks",
+        json={
+            "text": "Submit assignment",
+            "priority": "Medium",
+            "due_on": "2026-11-15",
+        },
+    )
+
+    assert response.status_code == 201
+    task = response.json()
+    assert task["due_on"] == "2026-11-15"
+    assert task["timing_confirmed"] is True
+
+    board = client.get("/api/attention")
+    assert board.status_code == 200
+
+
+def test_quick_add_task_rejects_invalid_input(client):
+    empty_title = client.post(
+        "/api/tasks",
+        json={"text": "   ", "priority": "Medium"},
+    )
+    assert empty_title.status_code == 422
+
+    invalid_priority = client.post(
+        "/api/tasks",
+        json={"text": "Valid task", "priority": "Urgent"},
+    )
+    assert invalid_priority.status_code == 422

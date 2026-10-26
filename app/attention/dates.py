@@ -108,6 +108,38 @@ def extract_time_of_day(phrase: Optional[str]) -> Optional[str]:
     return match.group(1).strip() if match else None
 
 
+def normalize_time_of_day(phrase: Optional[str]) -> Optional[str]:
+    """Normalize an explicit time phrase to local 24-hour HH:MM."""
+    extracted = extract_time_of_day(phrase)
+    if extracted is None:
+        return None
+
+    value = extracted.lower().replace(" ", "")
+    suffix = value[-2:] if value.endswith(("am", "pm")) else None
+    clock = value[:-2] if suffix else value
+    if ":" in clock:
+        hour_text, minute_text = clock.split(":", 1)
+    else:
+        hour_text, minute_text = clock, "00"
+
+    try:
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except ValueError:
+        return None
+    if minute > 59:
+        return None
+
+    if suffix:
+        if not 1 <= hour <= 12:
+            return None
+        hour = hour % 12 + (12 if suffix == "pm" else 0)
+    elif not 0 <= hour <= 23:
+        return None
+
+    return f"{hour:02d}:{minute:02d}"
+
+
 def parse_timing_phrase(
     phrase: Optional[str],
     *,

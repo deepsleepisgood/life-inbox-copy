@@ -470,8 +470,64 @@ Running log of architectural, code, and operational decisions.
   - Focused retry tests: 6 passed.
   - Full test suite: 123 passed, 7 skipped (Node.js-dependent pagination tests).
 
+## 2026-10-26 — Pulled Latest Main and Reviewed Notification Implementation Context
 
+- **What was decided / changed**:
+  1. Fetched and fast-forwarded the current branch to `origin/main` at `33def061f64e1381f15fbaeca88ccb1a4152c8b0` (9 commits ahead of the prior base). Before the pull, preserved the existing local edits in a Git stash; restored all eight changed files afterward. Resolved the overlapping `app/static/styles.css` and `decision.md` edits by retaining both upstream and local content. Confirmed there are no unresolved conflict markers; kept the stash as a recovery copy.
+  2. Reviewed the app's documented architecture and current auth, capture, analysis/task, timing/attention, calendar, persistence/migration, retrieval, UI, and test flows before proposing any implementation.
+  3. Extend the daily-notification proposal with an additional one-hour reminder for open `High` priority tasks only when a real due date and explicit task time can be normalized in the user's timezone. Do not infer a time for date-only tasks: they remain in the daily digest and receive no separate one-hour reminder unless the user supplies a time.
+  4. Use the stored task priority (`TaskRecord.priority`), not the source note's priority, and re-check the current task status, priority, timing, and snooze state immediately before delivery. No new AI call is needed at notification time. Because the request is specifically for AI-classified High tasks, the initial eligibility rule should require both `priority == "High"` and an AI-linked source item; manually created High tasks should not receive the extra one-hour alert unless that behavior is explicitly expanded. The daily due-today digest can still include all open due tasks.
+  5. Keep the daily digest limited to tasks due today by default; show overdue tasks in the in-app Attention view rather than sending a repeated daily overdue push. For undated tasks, keep the existing Unscheduled behavior and offer a non-spammy optional planning prompt without assigning an invented deadline.
+  6. For implementation, extend the existing date/time normalization with a validated local due time; add user-scoped notification preferences and Web Push subscriptions, a durable idempotent delivery ledger, an explicitly opted-in service worker, and a deployment-managed minute-level scheduler/worker. Store VAPID secrets only in environment/deployment secrets. Keep notification delivery owner-scoped without adding a public unauthenticated route or weakening the auth gate.
+  7. Test due-today digest selection, exactly-one-hour timing, date-only/no-fabricated-time behavior, timezone/DST boundaries, ambiguous/unconfirmed timing, task changes/completion/snooze before dispatch, multi-user isolation, duplicate runs, expired subscriptions, and delivery failure/retry behavior. Update deployment and manual-test docs when implementation is authorized.
+- **Codebase facts relevant to this plan**:
+  - AI organization returns task priorities in `AnalysisTodo`; `complete_analysis_run` persists them in `tasks.priority`. Manual tasks share that field and may also be assigned High.
+  - Tasks currently store `due_on` as a date and retain source timing in `timing_text`; `extract_time_of_day` extracts a phrase but does not provide a normalized, validated due datetime.
+  - `reminder_at` is currently stored and returned but has no delivery worker. Snoozing stores a date in both `snoozed_until` and `reminder_at`.
+  - The existing Attention board and daily briefing are generated on request; current timezone comes from one global `LIFE_INBOX_TIMEZONE`. The web app has no service worker, Web Push implementation, VAPID configuration, or scheduler dependency.
+  - Email sending is currently console/fake only. The browser UI is vanilla JavaScript, and all private API routes are session-authenticated and owner-scoped.
+- **Why**: The requested high-priority alert is only meaningful when a task has an actual time; date-only tasks cannot safely support a one-hour-before reminder without inventing a deadline. Persistent, owner-scoped delivery is needed because the app is multi-user and the web process has no reliable background scheduler.
+- **Files affected**:
+  - `decision.md`
+- **Implementation status**: Review and plan only. No notification feature was implemented.
 
+## 2026-10-26 — Local NVIDIA Environment Setup
 
+- **What was decided / changed**: Created the local `.env` from `.env.example` and configured the user-provided NVIDIA API key. Confirmed the key setting is populated and `.env` is ignored by Git.
+- **Why**: Configure the user's local development environment without adding credentials to tracked files or exposing the key in command output.
+- **Files affected**:
+  - `.env` (local, Git-ignored)
+  - `decision.md`
 
+## 2026-10-26 — Implementation: Daily and High-Priority Notifications
 
+- **What was decided / changed**:
+  1. Implement opt-in browser Web Push, with a configurable daily task digest (default 08:00) and an additional alert one hour before an explicit, parseable task time when the AI-generated task priority is `High`.
+  2. Only AI-linked High tasks qualify for the extra alert. Require a normalized date and explicit normalized time; do not infer a time for date-only tasks. Honor the task's current open status, due date/time, confirmed/unambiguous timing, and snooze state at dispatch.
+  3. Include open tasks due on the user's local day in the daily digest, regardless of priority. Exclude overdue tasks from recurring pushes; keep them visible in the existing attention UI. An opt-in unscheduled-task planning prompt may produce a digest containing a count, but must not label or schedule undated tasks as due.
+  4. Store per-user notification preferences, subscriptions, and an idempotent delivery ledger in Alembic-managed tables. Keep delivery in an explicit minute-driven worker command, not in the web process; document external scheduling and provide a local compose worker where practical.
+  5. Keep all browser management endpoints behind the existing session auth gate; serve only the service worker script publicly. Validate push endpoints before storing, never return subscription secrets, remove expired endpoints, and keep VAPID private material in environment/deployment secrets.
+  6. Extend task timing normalization to persist explicit local `HH:MM` values. Use the user's notification timezone for delivery-time interpretation, and keep existing configured timezone behavior as the default preference.
+  7. Add targeted API/service/migration tests, mock Web Push delivery, and update manual/deployment/architecture documentation. Do not perform live pushes in tests.
+- **Why**: The requested daily digest and one-hour alert require delivery beyond an open page, durable task timing, opt-in browser permission, user timezone handling, and deduplication across repeated or concurrent scheduler runs. The current app has none of the push infrastructure, and the stored `reminder_at` is not an active delivery mechanism.
+- **Implementation completed**:
+  - Added normalized task due times, the notification preference/subscription/delivery schema, Alembic migration `0014_notifications`, user-scoped settings/subscription APIs, and idempotent worker dispatch.
+  - Added the opt-in browser settings form, permission/subscription flow, root-scoped service worker, VAPID configuration, and a local Compose worker. Generated and validated local VAPID keys in the ignored `.env`; key values were not displayed or added to Git.
+  - Added coverage for daily digest selection, overdue/undated handling, AI-linked High eligibility, date-only/ambiguous timing, DST gaps, dispatch timing, settings persistence, subscription ownership, and migration shape. Updated architecture, deployment, and manual-testing documentation.
+- **Validation**:
+  - Focused notification/API/migration tests: `118 passed`.
+  - Full suite: `184 passed, 1 failed`; the isolated `tests/test_auth.py::test_login_rotates_session_token` failure concerns session rotation and is outside the notification changes. The remaining suite passes when that test is excluded.
+  - `node --check app/static/app.js` and `node --check app/static/service-worker.js` passed. `git diff --check` reports the existing trailing whitespace at `app/templates/index.html:186`; it was left untouched as unrelated. Local VAPID public/private key correspondence was verified without printing either key.
+- **Files affected**: `.env` (local, ignored), `.env.example`, `app/attention/dates.py`, `app/database.py`, `app/main.py`, `app/notifications/`, `app/schemas.py`, `app/static/app.js`, `app/static/service-worker.js`, `app/static/styles.css`, `app/templates/index.html`, `decision.md`, `docker-compose.yml`, `docs/architecture.md`, `docs/deployment.md`, `docs/manual-testing.md`, `migrations/versions/0014_notifications.py`, `requirements.txt`, `tests/test_api.py`, `tests/test_migrations.py`, and `tests/test_notifications.py`.
+
+## 2026-10-26 — Notification Opt-in Diagnosis
+
+- **What was observed**: Browser inspection showed Web Push support, secure localhost context, VAPID configuration, but `Notification.permission` was `denied`; API settings also showed notifications disabled and zero registered subscriptions. Therefore OS/browser support and server configuration were available, but this site had not been granted permission or opted in.
+- **What changed**: Added a prominent logged-in opt-in prompt that appears while notifications are off. Its button is the explicit user gesture for requesting permission and starting subscription. When browser permission is denied, the UI now explains that the site must be changed to Allow in browser site settings, then reloaded. Bumped the app JavaScript cache key and added regression coverage/documentation.
+- **Follow-up diagnosis**: Standalone scheduler entry points did not load `.env`, unlike the web configuration, so they could fail to see the VAPID keys even when the app could. Both the minute-loop scheduler and one-shot dispatcher now load `.env` on startup.
+- **Why**: The prior opt-in controls were lower on the page and only displayed a generic status. Browser notification permissions cannot be re-requested after denial without the user changing the site-level permission.
+
+## 2026-10-26 — Publish Requested Changes
+
+- **What was decided**: Publish the current tracked project changes directly to `deepsleepisgood/life-inbox-copy` on `main`, as requested. Keep the pre-existing untracked `.vscode/` settings and ignored local `.env` out of the commit.
+- **Checks**: Fetched `origin/main` and confirmed it had not advanced from the current base. Notification, API, and migration tests pass (`118 passed`). Credential-pattern scan found no credential-like values in the tracked diff. `git diff --check` reports the previously noted template whitespace only.

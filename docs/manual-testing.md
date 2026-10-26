@@ -125,6 +125,33 @@ Open http://127.0.0.1:8000
 - [ ] Editing or deleting a dated note immediately updates or removes the calendar event.
 - [ ] Keyboard navigation: Arrow keys move selection across days/weeks; Enter selects the day.
 
+## Task notification smoke
+
+Requires VAPID keys, HTTPS (or localhost), a browser with Web Push support,
+and the minute scheduler (`python -m app.notifications.scheduler` locally or
+the Compose `notifications` service). Tests must mock push; never send live
+notifications from automated tests.
+
+- [ ] Sign in, opt in under **Task notifications**, grant browser permission,
+  and save a daily time and IANA timezone.
+- [ ] After sign-in with notifications off, the prominent **Turn on task
+  notifications** prompt appears. Its button requests browser permission only
+  after the user clicks; if site permission is blocked, the prompt explains
+  how to allow it in browser site settings.
+- [ ] Reload and verify preferences persist; disable and re-enable notifications.
+- [ ] Add an open task due today; at/after the chosen local digest time it
+  appears in one daily push only.
+- [ ] Verify overdue and completed tasks are not included in the digest.
+- [ ] Enable the unscheduled prompt and verify only a count is shown; no date
+  or time is assigned to undated tasks.
+- [ ] An AI-linked High task with confirmed/clear date and explicit time gets
+  an alert one hour before; manual High tasks, date-only tasks, and ambiguous
+  unconfirmed timing do not.
+- [ ] Verify browser permission denial and missing server VAPID configuration
+  produce a clear status and do not enable notifications.
+- [ ] Test with two accounts and confirm subscriptions, settings, and task
+  delivery remain owner-scoped.
+
 ## Pagination regression (delete + Load more)
 
 Automated coverage: `tests/test_pagination_state.py` (pure JS helper via Node).

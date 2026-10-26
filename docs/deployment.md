@@ -24,9 +24,22 @@ LIFE_INBOX_OTP_PEPPER=<32+ random chars>   # required in beta/production
 LIFE_INBOX_TIMEZONE=UTC
 LIFE_INBOX_MAX_UPLOAD_MB=5
 LIFE_INBOX_CALENDAR_PROVIDER=mock|google
+LIFE_INBOX_VAPID_PUBLIC_KEY=<URL-safe base64 public key>
+LIFE_INBOX_VAPID_PRIVATE_KEY=<URL-safe base64 private key>
+LIFE_INBOX_VAPID_SUBJECT=mailto:admin@example.com
 ```
 
 Optional: `OPENAI_API_KEY` for live organization only (never in automated tests).
+VAPID keys are required for Web Push. Keep the private key in `.env` locally or
+in the deployment secret store; never commit it. Generate a fresh P-256 pair
+with the installed `pywebpush` dependency and retain the displayed private key:
+
+```bash
+python -c "import base64; from py_vapid import Vapid; from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat; v=Vapid(); v.generate_keys(); enc=lambda b: base64.urlsafe_b64encode(b).decode().rstrip('='); print('LIFE_INBOX_VAPID_PUBLIC_KEY='+enc(v.public_key.public_bytes(Encoding.X962, PublicFormat.UncompressedPoint))); print('LIFE_INBOX_VAPID_PRIVATE_KEY='+enc(v.private_key.private_numbers().private_value.to_bytes(32, 'big')))"
+```
+
+The public key is returned to opted-in browsers. The private key must remain
+server-side. A key change requires users to subscribe again in their browser.
 
 ## Local run
 
@@ -84,6 +97,23 @@ evaluation only. Before any shared beta:
 1. Serve over HTTPS only (session cookies are `Secure` in beta/production)
 2. Mount durable upload storage and database volumes
 3. Take a backup before migrations
+
+The Compose `notifications` service checks once per minute. Set the VAPID
+variables in the root `.env` before enabling notifications. Outside Compose,
+run `python -m app.notifications.dispatcher` from a deployment scheduler every
+minute. The local scheduler and dispatcher load `.env` when started from the
+project root. The worker uses the same database and VAPID secret values as the web
+app; do not run multiple independent workers unless they share the database
+delivery ledger.
+
+In the browser, open **Task notifications**, opt in, and choose the daily
+digest time and IANA timezone. Push requires HTTPS (localhost is allowed for
+development) and browser notification permission. The digest contains open
+tasks due on the user's local date; overdue tasks remain in Attention and are
+not repeated in pushes. AI-linked High-priority tasks get an additional alert
+only when a date and explicit time are known and the timing is not awaiting
+confirmation. Date-only and undated tasks receive no invented times. The
+optional unscheduled prompt is a count-only planning reminder.
 
 Install Postgres driver when using compose: `pip install 'psycopg[binary]'`
 (or add to a private requirements overlay). The base `requirements.txt`

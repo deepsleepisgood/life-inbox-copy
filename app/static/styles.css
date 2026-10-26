@@ -65,6 +65,21 @@ ul { padding-left: 22px; }
 .failure-center h2 { margin: 0 0 4px; }
 .failure-center .sub { margin: 0; }
 .failure-center button { margin: 0; }
+.notification-prompt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 16px 0;
+  padding: 16px 18px;
+  background: #eaf8fb;
+  border: 1px solid #83c8d2;
+  border-radius: 12px;
+}
+.notification-prompt h2 { margin: 0 0 4px; font-size: 1.1rem; }
+.notification-prompt p { margin: 0; color: #475569; }
+.notification-prompt button { margin: 0; }
 .ask-form { display: grid; gap: 10px; margin: 12px 0; }
 .ask-form input { width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; }
 .ask-examples { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -552,3 +567,88 @@ ul { padding-left: 22px; }
   }
 }
 
+.quick-task-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  align-items: end;
+  padding: 16px;
+  margin: 12px 0;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+}
+
+.quick-task-form label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.quick-task-form input,
+.quick-task-form select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  background: white;
+}
+
+.quick-task-form input:first-of-type {
+  grid-column: 1 / -1;
+}
+
+.quick-task-form button {
+  margin: 0;
+}
+
+.notification-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: end;
+  gap: 12px;
+  padding: 16px;
+  margin: 12px 0;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+}
+
+.notification-settings label {
+  display: grid;
+  gap: 6px;
+  color: #555;
+  font-size: 13px;
+}
+
+.notification-settings label.notification-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notification-settings input[type="time"],
+.notification-settings input[type="text"] {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  background: white;
+}
+
+.notification-settings button {
+  margin: 0;
+}
+
+@media (max-width: 600px) {
+  .quick-task-form {
+    grid-template-columns: 1fr;
+  }
+
+  .quick-task-form input:first-of-type {
+    grid-column: auto;
+  }
+}

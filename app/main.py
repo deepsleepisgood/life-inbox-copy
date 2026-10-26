@@ -46,6 +46,7 @@ from app.capture.voice_extract import process_voice_bytes, validate_audio_upload
 from app.database import (
     NotAuthenticatedError,
     add_image_item_to_db,
+    create_manual_task,
     add_item_to_db,
     add_note_to_db,
     add_pdf_item_to_db,
@@ -75,6 +76,7 @@ from app.database import (
     init_db,
     list_calendar_events_from_db,
     list_items_from_db,
+    get_notification_settings,
     list_notes_from_db,
     list_relations_from_db,
     list_tasks_from_db,
@@ -82,6 +84,9 @@ from app.database import (
     mark_item_processing,
     save_calendar_receipt,
     set_task_reminder_in_db,
+    save_notification_settings,
+    save_push_subscription,
+    remove_push_subscription,
     set_task_status,
     snooze_task_in_db,
     start_analysis_run,
@@ -123,10 +128,13 @@ from app.schemas import (
     Note,
     NoteCreate,
     NoteUpdate,
+    NotificationPreferencesUpdate,
     PersistedAnalysis,
     Priority,
+    PushSubscriptionRequest,
     SearchHit,
     Task,
+    TaskCreate,
     TaskListStatus,
     TaskReminderRequest,
     TaskSnoozeRequest,
@@ -206,6 +214,7 @@ PUBLIC_PATHS = frozenset(
         "/api/auth/logout",
         "/api/auth/password/forgot",
         "/api/auth/password/reset",
+        "/service-worker.js",
     }
 )
 PUBLIC_PREFIXES = ("/static/",)
@@ -1073,6 +1082,29 @@ def get_tasks(
             detail="Unable to load tasks. Please try again.",
         ) from exc
 
+@app.post("/api/tasks", response_model=Task, status_code=201)
+def create_task(payload: TaskCreate):
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(
+            status_code=422,
+            detail="Task title cannot be empty.",
+        )
+
+    try:
+        return create_manual_task(
+            text=text,
+            priority=payload.priority,
+            due_on=payload.due_on.isoformat() if payload.due_on else None,
+        )
+    except Exception as exc:
+        logger.exception("Failed to create manual task")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to create task. Please try again.",
+        ) from exc
+
+
 
 def _transition_task(task_id: int, task_status: str):
     try:
@@ -1147,6 +1179,98 @@ def set_task_reminder(task_id: int, payload: TaskReminderRequest):
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found.")
     return task
+
+
+@app.get("/api/notifications/settings")
+def notification_settings():
+    from app.notifications.service import vapid_is_configured, vapid_public_key
+
+    try:
+        return {
+            **get_notification_settings(),
+            "push_available": vapid_is_configured(),
+            "vapid_public_key": vapid_public_key(),
+        }
+    except Exception as exc:
+        logger.exception("Failed to load notification settings")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to load notification settings. Please try again.",
+        ) from exc
+
+
+@app.put("/api/notifications/settings")
+def update_notification_settings(payload: NotificationPreferencesUpdate):
+    from app.notifications.service import vapid_is_configured
+
+    if payload.enabled and not vapid_is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Browser notifications are not configured on this server.",
+        )
+    try:
+        return save_notification_settings(
+            enabled=payload.enabled,
+            daily_digest_time=payload.daily_digest_time,
+            timezone_name=payload.timezone,
+            include_unscheduled_prompt=payload.include_unscheduled_prompt,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to update notification settings")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to save notification settings. Please try again.",
+        ) from exc
+
+
+@app.post("/api/notifications/subscriptions", status_code=201)
+def create_notification_subscription(payload: PushSubscriptionRequest):
+    from app.notifications.service import (
+        validate_push_endpoint,
+        vapid_is_configured,
+    )
+
+    if not vapid_is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Browser notifications are not configured on this server.",
+        )
+    try:
+        endpoint = validate_push_endpoint(payload.endpoint)
+        save_push_subscription(
+            endpoint=endpoint,
+            p256dh=payload.keys["p256dh"],
+            auth=payload.keys["auth"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to save push subscription")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to enable browser notifications. Please try again.",
+        ) from exc
+    return {"registered": True}
+
+
+@app.delete("/api/notifications/subscriptions")
+def delete_notification_subscription(payload: PushSubscriptionRequest):
+    from app.notifications.service import validate_push_endpoint
+
+    try:
+        endpoint = validate_push_endpoint(payload.endpoint)
+        removed = remove_push_subscription(endpoint)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to remove push subscription")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to remove browser subscription. Please try again.",
+        ) from exc
+    return {"removed": removed}
 
 
 @app.get("/api/attention")
@@ -1574,6 +1698,15 @@ def _template(name: str) -> str:
 @app.get("/", response_class=HTMLResponse)
 def index():
     return _template("index.html")
+
+
+@app.get("/service-worker.js", include_in_schema=False)
+def service_worker():
+    return FileResponse(
+        APP_DIR / "static" / "service-worker.js",
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/"},
+    )
 
 
 @app.get("/login", response_class=HTMLResponse)

@@ -1,4 +1,6 @@
 from typing import List, Literal, Optional, Set
+from datetime import date
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
     BaseModel,
@@ -192,6 +194,7 @@ class Task(BaseModel):
     ai_timing_text: Optional[str] = None
     timing_confirmed: bool = False
     due_on: Optional[str] = None
+    due_time: Optional[str] = None
     due_confidence: Optional[str] = None
     snoozed_until: Optional[str] = None
     reminder_at: Optional[str] = None
@@ -200,6 +203,12 @@ class Task(BaseModel):
     created_at: str
     updated_at: str
 
+class TaskCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=500)
+    priority: Priority = "Medium"
+    due_on: Optional[date] = None
 
 class TaskTimingConfirm(BaseModel):
     timing_text: Optional[str] = Field(default=None, max_length=200)
@@ -211,6 +220,41 @@ class TaskSnoozeRequest(BaseModel):
 
 class TaskReminderRequest(BaseModel):
     reminder_at: str = Field(min_length=8, max_length=32)
+
+
+class NotificationPreferencesUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    daily_digest_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    timezone: str = Field(min_length=1, max_length=64)
+    include_unscheduled_prompt: bool = False
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        cleaned = value.strip()
+        try:
+            ZoneInfo(cleaned)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("Use a valid IANA timezone name.") from exc
+        return cleaned
+
+
+class PushSubscriptionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    endpoint: str = Field(min_length=10, max_length=4096)
+    keys: dict[str, str]
+
+    @field_validator("keys")
+    @classmethod
+    def validate_keys(cls, value: dict[str, str]) -> dict[str, str]:
+        if not value.get("p256dh") or not value.get("auth"):
+            raise ValueError("Push subscription must include encryption keys.")
+        if len(value["p256dh"]) > 512 or len(value["auth"]) > 512:
+            raise ValueError("Push subscription keys are too long.")
+        return value
 
 
 class CalendarPreviewRequest(BaseModel):
