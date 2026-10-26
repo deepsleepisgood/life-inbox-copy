@@ -2357,6 +2357,10 @@ def test_user_isolation_prevents_cross_account_access(client):
     missing = client.get(f"/api/items/{alice_item['id']}")
     assert missing.status_code == 404
 
+    bob_dash = client.get("/api/dashboard").json()
+    assert len(bob_dash["high_priority"]) == 0
+    assert len(bob_dash["recently_captured"]) == 0
+
     deleted = client.delete(f"/api/items/{alice_item['id']}")
     assert deleted.status_code == 404
 
@@ -2442,60 +2446,6 @@ def test_single_note_analysis_and_dashboard_completion_exclusion(client, monkeyp
             for n in b.get("notes", [])
         }
         assert item1["id"] not in active_analysis_ids
-
-
-def test_quick_add_task_without_due_date(client):
-    response = client.post(
-        "/api/tasks",
-        json={
-            "text": "Prepare AI assignment",
-            "priority": "High",
-        },
-    )
-
-    assert response.status_code == 201
-    task = response.json()
-    assert task["text"] == "Prepare AI assignment"
-    assert task["priority"] == "High"
-    assert task["status"] == "open"
-    assert task["due_on"] is None
-    assert task["source_item_ids"] == []
-
-    tasks = client.get("/api/tasks").json()
-    assert task in tasks
-
-
-def test_quick_add_task_with_due_date(client):
-    response = client.post(
-        "/api/tasks",
-        json={
-            "text": "Submit assignment",
-            "priority": "Medium",
-            "due_on": "2026-11-15",
-        },
-    )
-
-    assert response.status_code == 201
-    task = response.json()
-    assert task["due_on"] == "2026-11-15"
-    assert task["timing_confirmed"] is True
-
-    board = client.get("/api/attention")
-    assert board.status_code == 200
-
-
-def test_quick_add_task_rejects_invalid_input(client):
-    empty_title = client.post(
-        "/api/tasks",
-        json={"text": "   ", "priority": "Medium"},
-    )
-    assert empty_title.status_code == 422
-
-    invalid_priority = client.post(
-        "/api/tasks",
-        json={"text": "Valid task", "priority": "Urgent"},
-    )
-    assert invalid_priority.status_code == 422
 
 
 def test_quick_add_task_without_due_date(client):

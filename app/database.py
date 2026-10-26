@@ -1087,12 +1087,16 @@ def list_notes_from_db(exclude_completed: bool = False) -> list[dict]:
     """Analyzable ready items exposed in the legacy note shape for the organizer."""
     completed_ids = set()
     if exclude_completed:
+        owner_id = require_owner_id()
         with SessionLocal() as session:
             completed_ids = set(
                 session.scalars(
                     select(TaskSourceItemRecord.item_id)
                     .join(TaskRecord)
-                    .where(TaskRecord.status == TASK_COMPLETED)
+                    .where(
+                        TaskRecord.status == TASK_COMPLETED,
+                        TaskRecord.owner_user_id == owner_id,
+                    )
                 ).all()
             )
     notes = []
@@ -1548,7 +1552,10 @@ def get_latest_successful_analysis() -> Optional[dict]:
             session.scalars(
                 select(TaskSourceItemRecord.item_id)
                 .join(TaskRecord)
-                .where(TaskRecord.status == TASK_COMPLETED)
+                .where(
+                    TaskRecord.status == TASK_COMPLETED,
+                    TaskRecord.owner_user_id == owner_id,
+                )
             ).all()
         )
         if completed_item_ids:
@@ -2528,7 +2535,11 @@ def list_topics_from_db(include_archived: bool = False) -> list[dict]:
             statement = statement.where(TopicRecord.archived == 0)
         topics = session.scalars(statement).all()
         counts = {}
-        for insight in session.scalars(select(ItemInsightRecord)).all():
+        for insight in session.scalars(
+            select(ItemInsightRecord)
+            .join(InboxItemRecord, ItemInsightRecord.item_id == InboxItemRecord.id)
+            .where(InboxItemRecord.owner_user_id == owner_id)
+        ).all():
             effective_topic = (
                 insight.user_topic_id
                 if insight.user_topic_id is not None
@@ -2658,7 +2669,11 @@ def _insight_to_dict(insight: ItemInsightRecord) -> dict:
 
 
 def get_item_insight(item_id: int) -> Optional[dict]:
+    owner_id = require_owner_id()
     with SessionLocal() as session:
+        item = session.get(InboxItemRecord, item_id)
+        if item is None or item.owner_user_id != owner_id:
+            return None
         insight = session.get(ItemInsightRecord, item_id)
         if insight is None:
             return None
@@ -2674,7 +2689,11 @@ def update_item_insight_overrides(
     clear_overrides: bool = False,
     needs_review: Optional[bool] = None,
 ) -> Optional[dict]:
+    owner_id = require_owner_id()
     with SessionLocal() as session:
+        item = session.get(InboxItemRecord, item_id)
+        if item is None or item.owner_user_id != owner_id:
+            return None
         insight = session.get(ItemInsightRecord, item_id)
         if insight is None:
             return None
@@ -2699,7 +2718,6 @@ def update_item_insight_overrides(
         if needs_review is not None:
             insight.needs_review = 1 if needs_review else 0
         insight.updated_at = datetime.now(timezone.utc).isoformat()
-        item = session.get(InboxItemRecord, item_id)
         if item is not None and insight.user_title:
             item.title = insight.user_title
         session.commit()
@@ -2709,9 +2727,13 @@ def update_item_insight_overrides(
 def list_relations_from_db(
     include_dismissed: bool = False,
 ) -> list[dict]:
+    owner_id = require_owner_id()
     with SessionLocal() as session:
-        statement = select(ItemRelationRecord).order_by(
-            ItemRelationRecord.id.asc()
+        statement = (
+            select(ItemRelationRecord)
+            .join(InboxItemRecord, ItemRelationRecord.item_id_a == InboxItemRecord.id)
+            .where(InboxItemRecord.owner_user_id == owner_id)
+            .order_by(ItemRelationRecord.id.asc())
         )
         if not include_dismissed:
             statement = statement.where(ItemRelationRecord.dismissed == 0)
@@ -2749,25 +2771,35 @@ def dismiss_relation_in_db(relation_id: int) -> Optional[dict]:
 
 
 def get_organization_dashboard() -> dict:
+    owner_id = require_owner_id()
     with SessionLocal() as session:
-        ensure_default_topics(session, owner_user_id=require_owner_id())
+        ensure_default_topics(session, owner_user_id=owner_id)
         session.commit()
         topics = list_topics_from_db()
         insights = {
             insight.item_id: _insight_to_dict(insight)
-            for insight in session.scalars(select(ItemInsightRecord)).all()
+            for insight in session.scalars(
+                select(ItemInsightRecord)
+                .join(InboxItemRecord, ItemInsightRecord.item_id == InboxItemRecord.id)
+                .where(InboxItemRecord.owner_user_id == owner_id)
+            ).all()
         }
         completed_item_ids = set(
             session.scalars(
                 select(TaskSourceItemRecord.item_id)
                 .join(TaskRecord)
-                .where(TaskRecord.status == TASK_COMPLETED)
+                .where(
+                    TaskRecord.status == TASK_COMPLETED,
+                    TaskRecord.owner_user_id == owner_id,
+                )
             ).all()
         )
         items = [
             _item_to_dict(item)
             for item in session.scalars(
-                select(InboxItemRecord).order_by(InboxItemRecord.id.desc())
+                select(InboxItemRecord)
+                .where(InboxItemRecord.owner_user_id == owner_id)
+                .order_by(InboxItemRecord.id.desc())
             ).all()
             if item.id not in completed_item_ids
         ]
