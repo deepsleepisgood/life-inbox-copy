@@ -2516,10 +2516,29 @@ function initRailScrollSpy() {
 
   const updateActive = () => {
     ticking = false;
+    const atBottom = window.innerHeight + window.scrollY
+      >= document.documentElement.scrollHeight - 2;
     let current = targets[0];
-    for (const target of targets) {
-      if (target.section.getBoundingClientRect().top - probe <= 0) {
-        current = target;
+    if (atBottom) {
+      // The last section may be too short to ever cross the probe line
+      // (e.g. an empty state with little content below its heading).
+      // Use getBoundingClientRect + scrollY (not offsetTop, which is
+      // relative to the nearest positioned ancestor and not comparable
+      // across sections) to find whichever section sits lowest on the page.
+      current = targets.reduce((lowest, target) => (
+        target.section.getBoundingClientRect().top > lowest.section.getBoundingClientRect().top ? target : lowest
+      ), targets[0]);
+    } else {
+      // Pick whichever section's top is closest above the probe line, by
+      // actual page position, not by the rail's icon order (which doesn't
+      // match DOM order).
+      let bestTop = -Infinity;
+      for (const target of targets) {
+        const top = target.section.getBoundingClientRect().top - probe;
+        if (top <= 0 && top > bestTop) {
+          bestTop = top;
+          current = target;
+        }
       }
     }
     for (const target of targets) {
@@ -2537,3 +2556,27 @@ function initRailScrollSpy() {
 }
 
 initRailScrollSpy();
+
+function toggleAccountMenu(forceOpen) {
+  const panel = document.getElementById('accountMenuPanel');
+  const toggle = document.getElementById('accountMenuToggle');
+  if (!panel || !toggle) return;
+  const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : panel.hidden;
+  panel.hidden = !nextOpen;
+  toggle.setAttribute('aria-expanded', String(nextOpen));
+}
+
+document.addEventListener('click', (event) => {
+  const menu = document.getElementById('accountMenuToggle');
+  const panel = document.getElementById('accountMenuPanel');
+  if (!menu || !panel || panel.hidden) return;
+  if (!menu.contains(event.target) && !panel.contains(event.target)) {
+    toggleAccountMenu(false);
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    toggleAccountMenu(false);
+  }
+});
