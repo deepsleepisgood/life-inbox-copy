@@ -589,14 +589,14 @@ function setMicState(state, message = '', isError = false) {
     btn.className = `mic-button ${state}`;
     if (state === 'idle') {
       btn.disabled = false;
-      if (icon) { icon.style.display = 'inline'; icon.textContent = '🎙️'; }
+      if (icon) { icon.style.display = 'inline'; icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v4M8 22h8"/></svg>'; }
       if (pulse) pulse.style.display = 'none';
       if (timer) timer.style.display = 'none';
       if (spinner) spinner.style.display = 'none';
       if (label) label.textContent = 'Record note';
     } else if (state === 'recording') {
       btn.disabled = false;
-      if (icon) { icon.style.display = 'inline'; icon.textContent = '⏹️'; }
+      if (icon) { icon.style.display = 'inline'; icon.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12"/></svg>'; }
       if (pulse) pulse.style.display = 'inline-block';
       if (timer) { timer.style.display = 'inline'; timer.textContent = '00:00'; }
       if (spinner) spinner.style.display = 'none';
@@ -610,7 +610,7 @@ function setMicState(state, message = '', isError = false) {
       if (label) label.textContent = 'Transcribing…';
     } else if (state === 'error') {
       btn.disabled = false;
-      if (icon) { icon.style.display = 'inline'; icon.textContent = '⚠️'; }
+      if (icon) { icon.style.display = 'inline'; icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17h.01"/></svg>'; }
       if (pulse) pulse.style.display = 'none';
       if (timer) timer.style.display = 'none';
       if (spinner) spinner.style.display = 'none';
@@ -1232,6 +1232,7 @@ function renderTask(task) {
   const root = document.createElement('div');
   root.className = 'task';
   root.dataset.taskId = String(task.id);
+  root.dataset.priority = String(task.priority || '').toLowerCase();
 
   const text = document.createElement('strong');
   text.textContent = task.text;
@@ -2325,14 +2326,6 @@ function renderSelectedDayEvents() {
     return;
   }
 
-  const typeIcons = {
-    text: '📝',
-    voice: '🎙️',
-    url: '🔗',
-    pdf: '📄',
-    image: '🖼️'
-  };
-
   for (const ev of events) {
     const card = document.createElement('div');
     card.className = 'cal-event-card';
@@ -2348,8 +2341,7 @@ function renderSelectedDayEvents() {
     // Type badge
     const typeBadge = document.createElement('span');
     typeBadge.className = 'cal-pill type';
-    const icon = typeIcons[ev.source_type] || '📝';
-    typeBadge.textContent = `${icon} ${ev.source_type}`;
+    typeBadge.textContent = ev.source_type;
     metaEl.appendChild(typeBadge);
 
     // Priority badge
@@ -2364,7 +2356,7 @@ function renderSelectedDayEvents() {
     if (ev.time_of_day) {
       const timeBadge = document.createElement('span');
       timeBadge.className = 'cal-pill time';
-      timeBadge.textContent = `⏰ ${ev.time_of_day}`;
+      timeBadge.textContent = ev.time_of_day;
       metaEl.appendChild(timeBadge);
     }
 
@@ -2380,7 +2372,7 @@ function renderSelectedDayEvents() {
     if (ev.needs_confirmation) {
       const unconfBadge = document.createElement('span');
       unconfBadge.className = 'cal-pill unconfirmed';
-      unconfBadge.textContent = `⚠️ Unconfirmed${ev.timing_text ? ` ("${ev.timing_text}")` : ''}`;
+      unconfBadge.textContent = `Unconfirmed${ev.timing_text ? ` ("${ev.timing_text}")` : ''}`;
       metaEl.appendChild(unconfBadge);
     }
 
