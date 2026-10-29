@@ -90,6 +90,12 @@ function setStatus(elementId, message, isError = false) {
   const element = document.getElementById(elementId);
   element.textContent = message;
   element.classList.toggle('error', isError);
+  if (message) {
+    element.classList.remove('flash');
+    // eslint-disable-next-line no-unused-expressions
+    void element.offsetWidth;
+    element.classList.add('flash');
+  }
 }
 
 function setButtonBusy(buttonId, busy, busyLabel, idleLabel) {
@@ -1921,9 +1927,14 @@ async function loadAttention() {
     attentionRoot.replaceChildren();
     for (const [key, label] of sections) {
       const panel = document.createElement('div');
-      panel.className = 'panel';
+      panel.className = `panel attention-tile attention-tile--${key}`;
       const items = board[key] || [];
-      panel.innerHTML = `<strong>${esc(label)}</strong> <span class="muted">(${items.length})</span>`;
+      panel.innerHTML = `
+        <div class="attention-tile-head">
+          <span class="attention-tile-value">${items.length}</span>
+          <span class="attention-tile-label">${esc(label)}</span>
+        </div>
+      `;
       if (!items.length) {
         const empty = document.createElement('div');
         empty.className = 'muted';
@@ -2487,3 +2498,42 @@ window.addEventListener('popstate', () => {
   loadNotes();
   loadTasks();
 });
+
+function initRailScrollSpy() {
+  const links = Array.from(document.querySelectorAll('.app-rail-link'));
+  if (!links.length) return;
+  const targets = links
+    .map(link => {
+      const id = (link.getAttribute('href') || '').replace('#', '');
+      const section = id ? document.getElementById(id) : null;
+      return section ? {link, section} : null;
+    })
+    .filter(Boolean);
+  if (!targets.length) return;
+
+  const probe = 130; // px from the top of the viewport that counts as "current"
+  let ticking = false;
+
+  const updateActive = () => {
+    ticking = false;
+    let current = targets[0];
+    for (const target of targets) {
+      if (target.section.getBoundingClientRect().top - probe <= 0) {
+        current = target;
+      }
+    }
+    for (const target of targets) {
+      target.link.classList.toggle('active', target === current);
+    }
+  };
+
+  window.addEventListener('scroll', () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(updateActive);
+  }, {passive: true});
+
+  updateActive();
+}
+
+initRailScrollSpy();

@@ -540,3 +540,14 @@ Running log of architectural, code, and operational decisions.
 - **Minor additive JS**: `renderTask()` now sets `root.dataset.priority` so CSS can color-code task cards by priority (purely additive, no renamed functions).
 - **Verification**: Full pytest suite green (`185 passed`) after each file change. Verified live in the browser: Home, Dashboard, Topics, Ask, Tasks, Calendar (month grid + day inspector), Privacy, and mobile-width (375px) layouts. Login page verified via `curl` (200 OK, expected markup present) rather than a live screenshot, to avoid signing out the active test session in the browser pane.
 - **Not yet done**: not committed/pushed to GitHub pending owner confirmation; no `.env`/secrets touched.
+
+## 2026-10-29 — Added animation & wayfinding polish on top of the redesign
+
+- **What was decided / changed**: Per owner request ("add more elements/features or animations that would help"), added purely additive polish on top of the neo-brutalist redesign, with no renamed ids/functions and no new endpoints:
+  1. Entrance animation (`li-rise`, 320ms) on `.panel/.note/.task/.topic/.relation/.cal-event-card`, staggered via `nth-child` delays on the dashboard grid and attention board.
+  2. Rail nav scroll-spy (`initRailScrollSpy()` in `app.js`): highlights the current section's rail icon as the user scrolls, using a lightweight scroll + `requestAnimationFrame` probe (an initial `IntersectionObserver` version did not reliably track thin heading anchors, so it was replaced).
+  3. `setStatus()` now briefly flashes status text teal on update, for visible feedback on async actions.
+  4. The Attention board (`loadAttention()`) was restructured from plain `<strong>Label (count)</strong>` panels into proper big-number stat tiles (`attention-tile`), color-coded per bucket (overdue/today/upcoming/unscheduled/snoozed), fulfilling the stat-tile look from the originally approved mockup.
+  5. Added a `prefers-reduced-motion` guard that disables/shortens all animation and smooth scrolling for users who request it.
+- **Verification**: Full pytest suite green (`185 passed`). Verified live in the browser: entrance animation, attention stat tiles with real task data, and rail active-state tracking correctly while scrolling through Home → Ask → Dashboard.
+- **Not yet done**: still not pushed to GitHub — blocked on the owner's GitHub account getting collaborator (write) access to `deepsleepisgood/life-inbox-copy`.
