@@ -90,6 +90,12 @@ function setStatus(elementId, message, isError = false) {
   const element = document.getElementById(elementId);
   element.textContent = message;
   element.classList.toggle('error', isError);
+  if (message) {
+    element.classList.remove('flash');
+    // eslint-disable-next-line no-unused-expressions
+    void element.offsetWidth;
+    element.classList.add('flash');
+  }
 }
 
 function setButtonBusy(buttonId, busy, busyLabel, idleLabel) {
@@ -209,7 +215,7 @@ async function loadNotificationSettings() {
 async function saveNotificationSettings(event) {
   event.preventDefault();
   const enabled = document.getElementById('notificationsEnabled').checked;
-  const submitButton = document.getElementById('saveNotificationSettings');
+  const submitButton = document.getElementById('saveNotificationSettingsButton');
   const time = document.getElementById('dailyDigestTime').value;
   const timezoneName = document.getElementById('notificationTimezone').value.trim();
 
@@ -508,6 +514,7 @@ async function addPdf() {
       'Unable to upload PDF.'
     );
     input.value = '';
+    resetFilePickerName(input);
     setStatus(
       'noteStatus',
       item.processing_status === 'ready'
@@ -547,6 +554,7 @@ async function addImage() {
       'Unable to upload image.'
     );
     input.value = '';
+    resetFilePickerName(input);
     setStatus(
       'noteStatus',
       item.processing_status === 'ready'
@@ -589,14 +597,14 @@ function setMicState(state, message = '', isError = false) {
     btn.className = `mic-button ${state}`;
     if (state === 'idle') {
       btn.disabled = false;
-      if (icon) { icon.style.display = 'inline'; icon.textContent = '🎙️'; }
+      if (icon) { icon.style.display = 'inline'; icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v4M8 22h8"/></svg>'; }
       if (pulse) pulse.style.display = 'none';
       if (timer) timer.style.display = 'none';
       if (spinner) spinner.style.display = 'none';
       if (label) label.textContent = 'Record note';
     } else if (state === 'recording') {
       btn.disabled = false;
-      if (icon) { icon.style.display = 'inline'; icon.textContent = '⏹️'; }
+      if (icon) { icon.style.display = 'inline'; icon.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12"/></svg>'; }
       if (pulse) pulse.style.display = 'inline-block';
       if (timer) { timer.style.display = 'inline'; timer.textContent = '00:00'; }
       if (spinner) spinner.style.display = 'none';
@@ -610,7 +618,7 @@ function setMicState(state, message = '', isError = false) {
       if (label) label.textContent = 'Transcribing…';
     } else if (state === 'error') {
       btn.disabled = false;
-      if (icon) { icon.style.display = 'inline'; icon.textContent = '⚠️'; }
+      if (icon) { icon.style.display = 'inline'; icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17h.01"/></svg>'; }
       if (pulse) pulse.style.display = 'none';
       if (timer) timer.style.display = 'none';
       if (spinner) spinner.style.display = 'none';
@@ -637,6 +645,7 @@ async function addVoice() {
   }
   await uploadVoiceFile(file, 'Uploading voice note…');
   input.value = '';
+  resetFilePickerName(input);
 }
 
 async function uploadVoiceFile(file, statusMessage, transcript = '') {
@@ -1232,6 +1241,7 @@ function renderTask(task) {
   const root = document.createElement('div');
   root.className = 'task';
   root.dataset.taskId = String(task.id);
+  root.dataset.priority = String(task.priority || '').toLowerCase();
 
   const text = document.createElement('strong');
   text.textContent = task.text;
@@ -1780,6 +1790,50 @@ async function createTopic(event) {
   }
 }
 
+const CHART_COLORS = ['var(--li-pop)', 'var(--li-rose)', 'var(--li-amber)', 'var(--li-primary)', 'var(--li-primary-deep)'];
+
+function renderTopicsChart(topics) {
+  const data = (topics || [])
+    .filter(t => t.item_count > 0)
+    .sort((a, b) => b.item_count - a.item_count)
+    .slice(0, 8);
+  if (!data.length) {
+    return '<p class="muted">Nothing here yet.</p>';
+  }
+  const max = Math.max(...data.map(t => t.item_count));
+  const rowH = 30;
+  const gap = 10;
+  const trackW = 220;
+  const labelW = 110;
+  const valueW = 28;
+  const labelMaxChars = 15;
+  const totalW = labelW + trackW + valueW;
+  const height = data.length * (rowH + gap) - gap;
+  const truncate = name =>
+    name.length > labelMaxChars ? `${name.slice(0, labelMaxChars - 1)}…` : name;
+  const rows = data.map((t, i) => {
+    const barW = Math.max(6, Math.round((t.item_count / max) * trackW));
+    const y = i * (rowH + gap);
+    const color = CHART_COLORS[i % CHART_COLORS.length];
+    return `
+      <g transform="translate(0, ${y})">
+        <text x="0" y="${rowH / 2 + 4}" class="chart-label"><title>${esc(t.name)}</title>${esc(truncate(t.name))}</text>
+        <rect x="${labelW}" y="3" width="${trackW}" height="${rowH - 6}" fill="var(--li-paper-dim)" stroke="var(--li-ink)" stroke-width="2"></rect>
+        <rect x="${labelW}" y="3" width="${barW}" height="${rowH - 6}" fill="${color}" stroke="var(--li-ink)" stroke-width="2"></rect>
+        <text x="${labelW + trackW + 8}" y="${rowH / 2 + 4}" class="chart-value">${t.item_count}</text>
+      </g>
+    `;
+  }).join('');
+  const summary = data.map(t => `${t.name}: ${t.item_count}`).join(', ');
+  return `
+    <svg viewBox="0 0 ${totalW} ${height}" width="100%" height="${height}" role="img" aria-label="Bar chart of saved items per topic">
+      <title>Items per topic</title>
+      <desc>${esc(summary)}</desc>
+      ${rows}
+    </svg>
+  `;
+}
+
 async function loadDashboard() {
   try {
     const data = await fetchJson(
@@ -1824,6 +1878,10 @@ async function loadDashboard() {
         ${section('Related Items', listOrEmpty(data.related_items, rel =>
           `<li>#${rel.item_id_a} ↔ #${rel.item_id_b} <span class="pill">${esc(rel.relation_type)}</span></li>`
         ))}
+        <div class="panel dashboard-chart">
+          <h3>Items by Topic</h3>
+          ${renderTopicsChart(data.topics)}
+        </div>
       </div>
     `;
     setStatus('dashboardStatus', 'Dashboard updated.');
@@ -1920,9 +1978,14 @@ async function loadAttention() {
     attentionRoot.replaceChildren();
     for (const [key, label] of sections) {
       const panel = document.createElement('div');
-      panel.className = 'panel';
+      panel.className = `panel attention-tile attention-tile--${key}`;
       const items = board[key] || [];
-      panel.innerHTML = `<strong>${esc(label)}</strong> <span class="muted">(${items.length})</span>`;
+      panel.innerHTML = `
+        <div class="attention-tile-head">
+          <span class="attention-tile-value">${items.length}</span>
+          <span class="attention-tile-label">${esc(label)}</span>
+        </div>
+      `;
       if (!items.length) {
         const empty = document.createElement('div');
         empty.className = 'muted';
@@ -2325,14 +2388,6 @@ function renderSelectedDayEvents() {
     return;
   }
 
-  const typeIcons = {
-    text: '📝',
-    voice: '🎙️',
-    url: '🔗',
-    pdf: '📄',
-    image: '🖼️'
-  };
-
   for (const ev of events) {
     const card = document.createElement('div');
     card.className = 'cal-event-card';
@@ -2348,8 +2403,7 @@ function renderSelectedDayEvents() {
     // Type badge
     const typeBadge = document.createElement('span');
     typeBadge.className = 'cal-pill type';
-    const icon = typeIcons[ev.source_type] || '📝';
-    typeBadge.textContent = `${icon} ${ev.source_type}`;
+    typeBadge.textContent = ev.source_type;
     metaEl.appendChild(typeBadge);
 
     // Priority badge
@@ -2364,7 +2418,7 @@ function renderSelectedDayEvents() {
     if (ev.time_of_day) {
       const timeBadge = document.createElement('span');
       timeBadge.className = 'cal-pill time';
-      timeBadge.textContent = `⏰ ${ev.time_of_day}`;
+      timeBadge.textContent = ev.time_of_day;
       metaEl.appendChild(timeBadge);
     }
 
@@ -2380,7 +2434,7 @@ function renderSelectedDayEvents() {
     if (ev.needs_confirmation) {
       const unconfBadge = document.createElement('span');
       unconfBadge.className = 'cal-pill unconfirmed';
-      unconfBadge.textContent = `⚠️ Unconfirmed${ev.timing_text ? ` ("${ev.timing_text}")` : ''}`;
+      unconfBadge.textContent = `Unconfirmed${ev.timing_text ? ` ("${ev.timing_text}")` : ''}`;
       metaEl.appendChild(unconfBadge);
     }
 
@@ -2495,3 +2549,107 @@ window.addEventListener('popstate', () => {
   loadNotes();
   loadTasks();
 });
+
+function initRailScrollSpy() {
+  const links = Array.from(document.querySelectorAll('.app-rail-link'));
+  if (!links.length) return;
+  const targets = links
+    .map(link => {
+      const id = (link.getAttribute('href') || '').replace('#', '');
+      const section = id ? document.getElementById(id) : null;
+      return section ? {link, section} : null;
+    })
+    .filter(Boolean);
+  if (!targets.length) return;
+
+  const probe = 130; // px from the top of the viewport that counts as "current"
+  let ticking = false;
+
+  const updateActive = () => {
+    ticking = false;
+    const atBottom = window.innerHeight + window.scrollY
+      >= document.documentElement.scrollHeight - 2;
+    let current = targets[0];
+    if (atBottom) {
+      // The last section may be too short to ever cross the probe line
+      // (e.g. an empty state with little content below its heading).
+      // Use getBoundingClientRect + scrollY (not offsetTop, which is
+      // relative to the nearest positioned ancestor and not comparable
+      // across sections) to find whichever section sits lowest on the page.
+      current = targets.reduce((lowest, target) => (
+        target.section.getBoundingClientRect().top > lowest.section.getBoundingClientRect().top ? target : lowest
+      ), targets[0]);
+    } else {
+      // Pick whichever section's top is closest above the probe line, by
+      // actual page position, not by the rail's icon order (which doesn't
+      // match DOM order).
+      let bestTop = -Infinity;
+      for (const target of targets) {
+        const top = target.section.getBoundingClientRect().top - probe;
+        if (top <= 0 && top > bestTop) {
+          bestTop = top;
+          current = target;
+        }
+      }
+    }
+    for (const target of targets) {
+      target.link.classList.toggle('active', target === current);
+    }
+  };
+
+  window.addEventListener('scroll', () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(updateActive);
+  }, {passive: true});
+
+  updateActive();
+}
+
+initRailScrollSpy();
+
+function toggleAccountMenu(forceOpen) {
+  const panel = document.getElementById('accountMenuPanel');
+  const toggle = document.getElementById('accountMenuToggle');
+  if (!panel || !toggle) return;
+  const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : panel.hidden;
+  panel.hidden = !nextOpen;
+  toggle.setAttribute('aria-expanded', String(nextOpen));
+}
+
+document.addEventListener('click', (event) => {
+  const menu = document.getElementById('accountMenuToggle');
+  const panel = document.getElementById('accountMenuPanel');
+  if (!menu || !panel || panel.hidden) return;
+  if (!menu.contains(event.target) && !panel.contains(event.target)) {
+    toggleAccountMenu(false);
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    toggleAccountMenu(false);
+  }
+});
+
+function resetFilePickerName(input) {
+  const nameEl = input.closest('.file-picker')?.querySelector('.file-picker-name');
+  if (!nameEl) return;
+  nameEl.textContent = 'No file chosen';
+  nameEl.classList.remove('has-file');
+}
+
+function initFilePickers() {
+  const inputs = document.querySelectorAll('.file-picker-input');
+  for (const input of inputs) {
+    const nameEl = input.closest('.file-picker')?.querySelector('.file-picker-name');
+    if (!nameEl) continue;
+    input.addEventListener('change', () => {
+      const file = input.files && input.files[0];
+      nameEl.textContent = file ? file.name : 'No file chosen';
+      nameEl.classList.toggle('has-file', Boolean(file));
+    });
+  }
+}
+
+initFilePickers();
