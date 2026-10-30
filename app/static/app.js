@@ -1787,6 +1787,50 @@ async function createTopic(event) {
   }
 }
 
+const CHART_COLORS = ['var(--li-pop)', 'var(--li-rose)', 'var(--li-amber)', 'var(--li-primary)', 'var(--li-primary-deep)'];
+
+function renderTopicsChart(topics) {
+  const data = (topics || [])
+    .filter(t => t.item_count > 0)
+    .sort((a, b) => b.item_count - a.item_count)
+    .slice(0, 8);
+  if (!data.length) {
+    return '<p class="muted">Nothing here yet.</p>';
+  }
+  const max = Math.max(...data.map(t => t.item_count));
+  const rowH = 30;
+  const gap = 10;
+  const trackW = 220;
+  const labelW = 110;
+  const valueW = 28;
+  const labelMaxChars = 15;
+  const totalW = labelW + trackW + valueW;
+  const height = data.length * (rowH + gap) - gap;
+  const truncate = name =>
+    name.length > labelMaxChars ? `${name.slice(0, labelMaxChars - 1)}…` : name;
+  const rows = data.map((t, i) => {
+    const barW = Math.max(6, Math.round((t.item_count / max) * trackW));
+    const y = i * (rowH + gap);
+    const color = CHART_COLORS[i % CHART_COLORS.length];
+    return `
+      <g transform="translate(0, ${y})">
+        <text x="0" y="${rowH / 2 + 4}" class="chart-label"><title>${esc(t.name)}</title>${esc(truncate(t.name))}</text>
+        <rect x="${labelW}" y="3" width="${trackW}" height="${rowH - 6}" fill="var(--li-paper-dim)" stroke="var(--li-ink)" stroke-width="2"></rect>
+        <rect x="${labelW}" y="3" width="${barW}" height="${rowH - 6}" fill="${color}" stroke="var(--li-ink)" stroke-width="2"></rect>
+        <text x="${labelW + trackW + 8}" y="${rowH / 2 + 4}" class="chart-value">${t.item_count}</text>
+      </g>
+    `;
+  }).join('');
+  const summary = data.map(t => `${t.name}: ${t.item_count}`).join(', ');
+  return `
+    <svg viewBox="0 0 ${totalW} ${height}" width="100%" height="${height}" role="img" aria-label="Bar chart of saved items per topic">
+      <title>Items per topic</title>
+      <desc>${esc(summary)}</desc>
+      ${rows}
+    </svg>
+  `;
+}
+
 async function loadDashboard() {
   try {
     const data = await fetchJson(
@@ -1831,6 +1875,10 @@ async function loadDashboard() {
         ${section('Related Items', listOrEmpty(data.related_items, rel =>
           `<li>#${rel.item_id_a} ↔ #${rel.item_id_b} <span class="pill">${esc(rel.relation_type)}</span></li>`
         ))}
+        <div class="panel dashboard-chart">
+          <h3>Items by Topic</h3>
+          ${renderTopicsChart(data.topics)}
+        </div>
       </div>
     `;
     setStatus('dashboardStatus', 'Dashboard updated.');
