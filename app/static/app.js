@@ -215,7 +215,7 @@ async function loadNotificationSettings() {
 async function saveNotificationSettings(event) {
   event.preventDefault();
   const enabled = document.getElementById('notificationsEnabled').checked;
-  const submitButton = document.getElementById('saveNotificationSettings');
+  const submitButton = document.getElementById('saveNotificationSettingsButton');
   const time = document.getElementById('dailyDigestTime').value;
   const timezoneName = document.getElementById('notificationTimezone').value.trim();
 
