@@ -514,6 +514,7 @@ async function addPdf() {
       'Unable to upload PDF.'
     );
     input.value = '';
+    resetFilePickerName(input);
     setStatus(
       'noteStatus',
       item.processing_status === 'ready'
@@ -553,6 +554,7 @@ async function addImage() {
       'Unable to upload image.'
     );
     input.value = '';
+    resetFilePickerName(input);
     setStatus(
       'noteStatus',
       item.processing_status === 'ready'
@@ -643,6 +645,7 @@ async function addVoice() {
   }
   await uploadVoiceFile(file, 'Uploading voice note…');
   input.value = '';
+  resetFilePickerName(input);
 }
 
 async function uploadVoiceFile(file, statusMessage, transcript = '') {
@@ -2628,3 +2631,25 @@ document.addEventListener('keydown', (event) => {
     toggleAccountMenu(false);
   }
 });
+
+function resetFilePickerName(input) {
+  const nameEl = input.closest('.file-picker')?.querySelector('.file-picker-name');
+  if (!nameEl) return;
+  nameEl.textContent = 'No file chosen';
+  nameEl.classList.remove('has-file');
+}
+
+function initFilePickers() {
+  const inputs = document.querySelectorAll('.file-picker-input');
+  for (const input of inputs) {
+    const nameEl = input.closest('.file-picker')?.querySelector('.file-picker-name');
+    if (!nameEl) continue;
+    input.addEventListener('change', () => {
+      const file = input.files && input.files[0];
+      nameEl.textContent = file ? file.name : 'No file chosen';
+      nameEl.classList.toggle('has-file', Boolean(file));
+    });
+  }
+}
+
+initFilePickers();

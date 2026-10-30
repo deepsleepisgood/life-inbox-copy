@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Life Inbox</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261030_chart" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261030_filepicker" />
 </head>
 <body class="has-rail">
   <nav class="app-rail" aria-label="Life Inbox sections">
@@ -127,14 +127,22 @@
           <div class="pdf-capture">
             <label for="pdfFile">Upload PDF</label>
             <div class="inline-input-row">
-              <input id="pdfFile" type="file" accept="application/pdf,.pdf" />
+              <span class="file-picker">
+                <input id="pdfFile" type="file" accept="application/pdf,.pdf" class="file-picker-input" />
+                <span class="file-picker-btn">Choose file</span>
+                <span class="file-picker-name">No file chosen</span>
+              </span>
               <button id="addPdfButton" type="button" class="secondary" onclick="addPdf()">Upload</button>
             </div>
           </div>
           <div class="image-capture">
             <label for="imageFile">Upload image / screenshot</label>
             <div class="inline-input-row">
-              <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif" />
+              <span class="file-picker">
+                <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif" class="file-picker-input" />
+                <span class="file-picker-btn">Choose file</span>
+                <span class="file-picker-name">No file chosen</span>
+              </span>
               <button id="addImageButton" type="button" class="secondary" onclick="addImage()">Upload</button>
             </div>
           </div>
@@ -142,7 +150,11 @@
             <label for="voiceFile">Upload audio file</label>
             <div class="voice-actions">
               <button id="recordVoiceButton" type="button" class="secondary" style="display:none;" onclick="toggleVoiceRecording()">Record</button>
-              <input id="voiceFile" type="file" accept="audio/*,video/webm,.webm,.wav,.mp3,.m4a,.ogg" />
+              <span class="file-picker">
+                <input id="voiceFile" type="file" accept="audio/*,video/webm,.webm,.wav,.mp3,.m4a,.ogg" class="file-picker-input" />
+                <span class="file-picker-btn">Choose file</span>
+                <span class="file-picker-name">No file chosen</span>
+              </span>
               <button id="addVoiceButton" type="button" class="secondary" onclick="addVoice()">Upload audio</button>
             </div>
             <p id="voiceStatus" class="status muted" role="status" aria-live="polite"></p>
@@ -381,6 +393,6 @@
   </div>
 
   <script src="/static/pagination_state.js?v=20261025_01"></script>
-  <script src="/static/app.js?v=20261030_chart02"></script>
+  <script src="/static/app.js?v=20261030_filepicker"></script>
 </body>
 </html>
