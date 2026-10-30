@@ -1303,6 +1303,43 @@ def complete_analysis_run(
                 if item is not None and insight.user_title is None:
                     item.title = analyzed_item["title"]
 
+        owner_id = require_owner_id()
+        if merge_single:
+            analyzed_item_ids = {
+                n["id"]
+                for b in result.get("buckets", [])
+                for n in b.get("notes", [])
+            }
+            if not analyzed_item_ids:
+                analyzed_item_ids = {
+                    item_id
+                    for todo in result.get("todos", [])
+                    for item_id in todo.get("source_note_ids", [])
+                }
+        else:
+            analyzed_item_ids = set(
+                session.scalars(
+                    select(InboxItemRecord.id).where(
+                        InboxItemRecord.owner_user_id == owner_id
+                    )
+                ).all()
+            )
+
+        existing_tasks = session.scalars(
+            select(TaskRecord).where(TaskRecord.owner_user_id == owner_id)
+        ).all()
+        task_sources = {
+            t.id: set(
+                session.scalars(
+                    select(TaskSourceItemRecord.item_id).where(
+                        TaskSourceItemRecord.task_id == t.id
+                    )
+                ).all()
+            )
+            for t in existing_tasks
+        }
+        matched_task_ids = set()
+
         for todo in result["todos"]:
             source_item_ids = sorted(set(todo["source_note_ids"]))
             if not source_item_ids:
@@ -1314,46 +1351,76 @@ def complete_analysis_run(
                     )
 
             dedup_key = _task_dedup_key(source_item_ids, todo["task"])
-            task = session.scalars(
-                select(TaskRecord).where(TaskRecord.dedup_key == dedup_key)
-            ).first()
+            target_norm = _normalize_task_text(todo["task"])
+            target_words = set(target_norm.split())
+
+            task = next(
+                (
+                    t
+                    for t in existing_tasks
+                    if t.id not in matched_task_ids and t.dedup_key == dedup_key
+                ),
+                None,
+            )
 
             if task is None:
-                # Durable match: same sources + similar normalized wording.
-                candidates = session.scalars(
-                    select(TaskRecord)
-                    .join(TaskSourceItemRecord)
-                    .where(TaskSourceItemRecord.item_id.in_(source_item_ids))
-                    .distinct()
-                    .order_by(TaskRecord.id.asc())
-                ).all()
-                target_norm = _normalize_task_text(todo["task"])
+                candidates = [
+                    t
+                    for t in existing_tasks
+                    if t.id not in matched_task_ids
+                    and task_sources.get(t.id) == set(source_item_ids)
+                ]
+
                 for candidate in candidates:
-                    candidate_sources = set(
-                        session.scalars(
-                            select(TaskSourceItemRecord.item_id).where(
-                                TaskSourceItemRecord.task_id == candidate.id
-                            )
-                        ).all()
-                    )
-                    if candidate_sources != set(source_item_ids):
-                        continue
                     if _normalize_task_text(candidate.text) == target_norm:
                         task = candidate
                         break
-                    # Soft wording drift still maps to the same durable task.
-                    left = set(target_norm.split())
-                    right = set(_normalize_task_text(candidate.text).split())
-                    if left and right and len(left & right) / len(left | right) >= 0.6:
-                        task = candidate
-                        break
+
+                if task is None:
+                    for candidate in candidates:
+                        candidate_norm = _normalize_task_text(candidate.text)
+                        candidate_words = set(candidate_norm.split())
+                        if (
+                            target_norm
+                            and candidate_norm
+                            and (
+                                target_norm in candidate_norm
+                                or candidate_norm in target_norm
+                            )
+                        ):
+                            task = candidate
+                            break
+                        if target_words and candidate_words:
+                            overlap = len(target_words & candidate_words)
+                            containment = overlap / min(
+                                len(target_words), len(candidate_words)
+                            )
+                            jaccard = overlap / len(
+                                target_words | candidate_words
+                            )
+                            if containment >= 0.5 or jaccard >= 0.4:
+                                task = candidate
+                                break
+
+                if task is None and set(source_item_ids).issubset(analyzed_item_ids):
+                    open_candidates = [
+                        c for c in candidates if c.status == TASK_OPEN
+                    ]
+                    todos_for_source = [
+                        t
+                        for t in result["todos"]
+                        if sorted(set(t.get("source_note_ids") or []))
+                        == source_item_ids
+                    ]
+                    if len(open_candidates) == 1 and len(todos_for_source) == 1:
+                        task = open_candidates[0]
+
+            from app.attention.dates import (
+                normalize_time_of_day,
+                parse_timing_phrase,
+            )
 
             if task is None:
-                from app.attention.dates import (
-                    normalize_time_of_day,
-                    parse_timing_phrase,
-                )
-
                 parsed_timing = parse_timing_phrase(todo.get("when"))
                 task = TaskRecord(
                     text=todo["task"],
@@ -1366,7 +1433,7 @@ def complete_analysis_run(
                     due_confidence=parsed_timing.confidence,
                     status=TASK_OPEN,
                     dedup_key=dedup_key,
-                    owner_user_id=require_owner_id(),
+                    owner_user_id=owner_id,
                     created_at=completed_at,
                     updated_at=completed_at,
                 )
@@ -1380,11 +1447,6 @@ def complete_analysis_run(
                         )
                     )
             else:
-                from app.attention.dates import (
-                    normalize_time_of_day,
-                    parse_timing_phrase,
-                )
-
                 task.text = todo["task"]
                 task.priority = todo["priority"]
                 task.ai_timing_text = todo["when"]
@@ -1396,13 +1458,7 @@ def complete_analysis_run(
                     task.due_confidence = parsed_timing.confidence
                 task.dedup_key = dedup_key
                 task.updated_at = completed_at
-                linked = set(
-                    session.scalars(
-                        select(TaskSourceItemRecord.item_id).where(
-                            TaskSourceItemRecord.task_id == task.id
-                        )
-                    ).all()
-                )
+                linked = task_sources.get(task.id, set())
                 for item_id in source_item_ids:
                     if item_id not in linked:
                         session.add(
@@ -1411,6 +1467,23 @@ def complete_analysis_run(
                                 item_id=item_id,
                             )
                         )
+            matched_task_ids.add(task.id)
+
+        for existing in existing_tasks:
+            sources = task_sources.get(existing.id)
+            if (
+                existing.status == TASK_OPEN
+                and existing.id not in matched_task_ids
+                and sources
+                and sources.issubset(analyzed_item_ids)
+            ):
+                for link in session.scalars(
+                    select(TaskSourceItemRecord).where(
+                        TaskSourceItemRecord.task_id == existing.id
+                    )
+                ).all():
+                    session.delete(link)
+                session.delete(existing)
 
         # Refresh deterministic relations for current inbox text.
         items = [

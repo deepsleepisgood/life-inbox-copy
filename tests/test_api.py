@@ -2500,3 +2500,32 @@ def test_quick_add_task_rejects_invalid_input(client):
         json={"text": "Valid task", "priority": "Urgent"},
     )
     assert invalid_priority.status_code == 422
+
+
+def test_editing_note_updates_task_without_duplication(client):
+    # 1. Create a note and analyze it
+    item = client.post(
+        "/api/items",
+        json={"raw_text": "I need to play pickleball at 8pm today."}
+    ).json()
+    res1 = client.post(f"/api/analyze?item_id={item['id']}")
+    assert res1.status_code == 200
+
+    tasks1 = client.get("/api/tasks").json()
+    assert len(tasks1) == 1
+    assert "pickleball" in tasks1[0]["text"].lower()
+
+    # 2. Edit note to add more details (e.g. "with vijay")
+    client.put(
+        f"/api/items/{item['id']}",
+        json={"raw_text": "I need to play pickleball with vijay at 8pm today"}
+    )
+    res2 = client.post(f"/api/analyze?item_id={item['id']}")
+    assert res2.status_code == 200
+
+    # 3. Tasks list must have exactly 1 task (updated), no duplicate tasks
+    tasks2 = client.get("/api/tasks").json()
+    assert len(tasks2) == 1
+    assert "vijay" in tasks2[0]["text"].lower()
+    assert tasks2[0]["source_item_ids"] == [item["id"]]
+
