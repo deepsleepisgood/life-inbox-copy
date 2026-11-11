@@ -8,3 +8,6 @@ data/*.bak
 data/uploads/
 .DS_Store
 
+import/
+.pytest_cache/
+.claude/

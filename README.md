@@ -92,10 +92,10 @@ Life Inbox includes built-in voice note capture:
 ## 3. In-App Calendar for Dated Items
 
 Life Inbox includes an integrated, responsive in-app calendar embedded directly in the workspace:
-- **Zero Manual Step**: Notes captured via text, voice recordings, URLs, PDFs, or images that mention a date or time (e.g. "dentist on 3 Nov", "renew insurance by next Friday") appear automatically on the calendar upon ingestion. Items without dates are excluded.
+- **Zero Manual Step**: Notes captured via text, voice recordings, URLs, PDFs, or images that name a date or time (e.g. "dentist on 3 Nov", "call mom tomorrow") appear automatically on the calendar upon ingestion. Items without dates are excluded.
 - **Month View with Event Indicators**: Days with events show visual event dots and counts. Controls allow switching between previous/next months and returning to "Today".
 - **Day Inspector & Note Linking**: Clicking any day displays scheduled items with their title, source type badge (`text`, `voice`, `url`, `pdf`, `image`), and priority. Clicking "View source note" smoothly scrolls to and highlights the original note in the inbox.
-- **Ambiguous & Relative Timing**: Ambiguous dates display unconfirmed styling (`⚠️ Needs confirmation`) with an inline confirmation action.
+- **Guessed dates wait for your OK**: A guess such as "renew insurance by next Friday" or "call mom this weekend" is only a suggestion (a dashed chip, "Fri 20 Nov? · confirm"). It joins the calendar once you confirm it or pick another day in the small calendar. The app asks right after you save the note.
 - **Lifecycle Handling**: Completed tasks are shown struck through; dismissed tasks are hidden. Deleting or editing a note immediately updates the calendar.
 - **Manual tasks**: A task added from the Tasks form with a due date appears on the calendar immediately, and the calendar jumps to that month. Use **Edit** on any open task to change its text, priority or due date (clearing the date removes it from the calendar). Edited text and priority are kept when notes are re-analyzed.
 - **Natural timing**: Phrases such as `today`, `tonight`, `this evening`, `tomorrow`, `next Friday`, `3 Nov` and `in 3 days` are understood; "Preview calendar" on a task shows a preview (and an explicit confirm step) but never writes to a real Google Calendar.

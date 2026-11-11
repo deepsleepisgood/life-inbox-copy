@@ -32,6 +32,15 @@ def main() -> None:
                 )
         except Exception:
             logger.exception("Notification dispatch failed; retrying next minute.")
+        try:
+            # The weekly review (change 020): one call per user per week.
+            from app.review import run_due_reviews
+
+            reviewed = run_due_reviews()
+            if reviewed:
+                logger.info("Weekly reviews done: %d", reviewed)
+        except Exception:
+            logger.exception("Weekly reviews failed; retrying next minute.")
         time.sleep(60)
 
 

@@ -239,6 +239,35 @@ def _deliver(
         raise
 
 
+def _scout_push(user: dict, tasks: list[dict], local_now: datetime, now: datetime, result: dict) -> None:
+    """Scout's weekly catch-up (change 018), once per catch-up slot."""
+    from app import scout
+
+    user_id = user["user_id"]
+    try:
+        payload = scout.push_for(user, tasks, local_now)
+        if payload is None:
+            return
+        slot = payload.pop("slot")
+        delivery = _deliver(
+            user_id=user_id,
+            task_id=None,
+            kind="scout_catchup",
+            local_date=date.fromisoformat(slot),
+            idempotency_key=f"scout:{user_id}:{slot}",
+            payload=payload,
+            now=now,
+        )
+    except Exception:
+        logger.exception("Scout catch-up notification failed for user %s", user_id)
+        result["failed"] += 1
+        return
+    if delivery is True:
+        result["sent"] += 1
+    elif delivery is False:
+        result["failed"] += 1
+
+
 def dispatch_due_notifications(now: Optional[datetime] = None) -> dict:
     """Send due digests and one-hour High-task alerts for enabled users."""
     current = now or datetime.now(timezone.utc)
@@ -259,8 +288,9 @@ def dispatch_due_notifications(now: Optional[datetime] = None) -> dict:
         local_now = current.astimezone(zone)
         tasks = list_notification_tasks(user_id)
         unscheduled_count = sum(
-            1 for task in tasks if not task.get("due_on")
+            1 for task in tasks if not task.get("due_on") and not task.get("someday")
         )
+        _scout_push(user, tasks, local_now, current, result)
         if (
             _TIME_RE.fullmatch(user["daily_digest_time"])
             and local_now.strftime("%H:%M") >= user["daily_digest_time"]

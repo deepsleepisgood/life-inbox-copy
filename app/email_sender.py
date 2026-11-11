@@ -3,10 +3,13 @@
 Providers (``LIFE_INBOX_EMAIL_PROVIDER``):
 - ``console``: prints the email in the server terminal. Local development only.
 - ``fake``: keeps emails in ``FAKE_OUTBOX`` for automated tests.
-
 - ``smtp``: real delivery over SMTP (Gmail with an app password, or any
   provider). Configure ``LIFE_INBOX_SMTP_HOST``, ``..._PORT`` (587 STARTTLS
-  by default; 465 uses SSL), ``..._USER``, ``..._PASSWORD`` and ``..._FROM``.
+  by default; 465 uses SSL), ``..._USER``, ``..._PASSWORD`` and
+  ``LIFE_INBOX_SMTP_FROM`` (``LIFE_INBOX_EMAIL_FROM`` also works).
+- ``off``: no email at all. "Forgot password" says it isn't set up; the
+  operator resets a password with ``python -m scripts.reset_password``.
+  Allowed for a private beta, never in production.
 
 Another provider (e.g. Resend) plugs in the same way without changing callers.
 """
@@ -54,7 +57,8 @@ def _send_smtp(message: OutgoingEmail) -> None:
     port = int(os.getenv("LIFE_INBOX_SMTP_PORT", "587") or "587")
     user = os.getenv("LIFE_INBOX_SMTP_USER", "").strip()
     password = os.getenv("LIFE_INBOX_SMTP_PASSWORD", "")
-    sender = os.getenv("LIFE_INBOX_SMTP_FROM", "").strip() or user
+    sender = (os.getenv("LIFE_INBOX_SMTP_FROM", "").strip()
+              or os.getenv("LIFE_INBOX_EMAIL_FROM", "").strip() or user)
     if not host or not sender:
         raise RuntimeError("SMTP is not configured (host and from address needed).")
 
@@ -78,10 +82,17 @@ def _send_smtp(message: OutgoingEmail) -> None:
         server.send_message(email)
 
 
+class EmailOff(RuntimeError):
+    """Email is switched off on this Life Inbox (LIFE_INBOX_EMAIL_PROVIDER=off)."""
+
+
+def _send_off(message: OutgoingEmail) -> None:
+    raise EmailOff("Email isn't set up on this Life Inbox.")
 _PROVIDERS = {
     "console": _send_console,
     "fake": _send_fake,
     "smtp": _send_smtp,
+    "off": _send_off,
 }
 
 
