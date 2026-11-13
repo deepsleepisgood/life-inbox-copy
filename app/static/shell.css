@@ -26,13 +26,34 @@
   --sh-heading-font: var(--li-font-display);
   --sh-body-font: var(--li-font-body);
 
-  /* life areas: background and ink */
-  --bot-learn-bg: #dcd3f7; --bot-learn-fg: #463a7c;
-  --bot-money-bg: #fdf1d8; --bot-money-fg: #8a5a00;
-  --bot-health-bg: #fbe3e6; --bot-health-fg: #9f2a35;
-  --bot-people-bg: #e3f4ea; --bot-people-fg: #1f6b3f;
-  --bot-fun-bg: #e3edfb; --bot-fun-fg: #2f5e9e;
-  --bot-none-bg: #eeeeee; --bot-none-fg: #5f5a7a;
+  /* Many rules below reach for tokens (--red, --amber, --green, --lav-*,
+     --ink, --ink-soft, --line) that are only ever defined inside the calm
+     theme, via `var(--token, #hardcoded-calm-color)`. Without data-theme set,
+     --token is undefined so every one of those hardcoded calm-pastel
+     fallbacks was firing instead — defining the same names here, mapped onto
+     our own palette, makes every one of those rules resolve correctly in
+     both themes with no further edits. */
+  --ink: var(--li-ink);
+  --ink-soft: var(--li-text-muted);
+  --line: var(--li-ink);
+  --red: var(--li-rose);
+  --red-soft: var(--li-danger-bg);
+  --amber: var(--li-amber);
+  --amber-soft: var(--li-warning-bg);
+  --green: var(--li-pop);
+  --green-soft: var(--li-paper-dim);
+  --lav-mid: var(--li-primary);
+  --lav-deep: var(--li-primary-deep);
+  --lav-deeper: var(--li-ink);
+
+  /* life areas: background and ink — the same five-hue palette used for the
+     dashboard chart and the rail's zone tabs, not a separate pastel set */
+  --bot-learn-bg: var(--li-primary); --bot-learn-fg: var(--li-ink);
+  --bot-money-bg: var(--li-amber); --bot-money-fg: var(--li-ink);
+  --bot-health-bg: var(--li-rose); --bot-health-fg: var(--li-ink);
+  --bot-people-bg: var(--li-pop); --bot-people-fg: var(--li-ink);
+  --bot-fun-bg: var(--li-primary-deep); --bot-fun-fg: var(--li-ink);
+  --bot-none-bg: var(--li-paper-dim); --bot-none-fg: var(--li-text-muted);
 }
 
 html[data-theme="calm"] {
@@ -176,7 +197,7 @@ body.shell-body {
 .status-line { font-size: 12px; color: var(--sh-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .crew-icon, .bot-icon {
   width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; flex: none;
-  background: #efeafd; color: #463a7c;
+  background: var(--li-primary); color: var(--li-ink);
 }
 .crew-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
 .bot-learn .bot-icon { background: var(--bot-learn-bg); color: var(--bot-learn-fg); }
@@ -196,11 +217,23 @@ body.shell-body {
 .view-title { margin: 4px 2px 0; font-family: var(--sh-heading-font); font-size: 26px; line-height: 1.2; text-transform: none; }
 .view-sub { margin: 0 2px; color: var(--sh-muted); }
 .view-card, .card {
+  /* --sh-muted defaults to --li-text-muted, a light tone meant for the dark
+     page/pane background; these cards sit on --sh-card (light paper by
+     default), so muted text inside them needs the dark-on-paper muted tone
+     already used elsewhere in the v1 design instead. */
+  --sh-muted: #5b5468;
   background: var(--sh-card); color: var(--sh-ink);
   border: 1px solid var(--sh-line); border-radius: var(--sh-radius); box-shadow: var(--sh-shadow);
   padding: 16px 18px;
 }
 .view-card > h2:first-child, .card h2 { margin-top: 0; }
+/* styles.css's global `h1,h2,h3,h4{color:var(--li-text)}` (written for
+   headings on the dark page background) directly targets every heading, and
+   a direct rule always beats inherited color regardless of specificity — so
+   without this, every heading inside a light card would render in the
+   page's light text color instead of the card's ink. */
+.view-card h1, .view-card h2, .view-card h3, .view-card h4,
+.card h1, .card h2, .card h3, .card h4 { color: var(--sh-ink); }
 .lens-pending {
   margin: 0; padding: 8px 12px; border-radius: var(--sh-radius-sm);
   background: var(--amber-soft, var(--li-warning-bg)); color: var(--amber, var(--li-amber)); font-size: 13px;
@@ -263,7 +296,7 @@ button.chip:hover { transform: none; box-shadow: none; text-decoration: underlin
 .chip-topic { background: #f3f0fc; }
 .pri-high { background: var(--red-soft, #fbe3e6); color: var(--red, #9f2a35); }
 .pri-medium { background: var(--amber-soft, #fdf1d8); color: var(--amber, #8a5a00); }
-.pri-low { background: rgba(176, 224, 230, 0.55); color: #1f6170; }
+.pri-low { background: var(--li-paper-dim); color: var(--li-ink); }
 
 /* the week chart: one column per day, a spike per item due */
 .week-chart { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; align-items: end; margin: 6px 0 4px; }
@@ -862,7 +895,7 @@ body.sheet-open { overflow: hidden; }
 .scout-view { display: grid; gap: 14px; }
 .scout-questions { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
 .scout-past { background: var(--sh-soft, #f3f0fc); }
-.scout-someday { background: rgba(176, 224, 230, 0.35); }
+.scout-someday { background: var(--sh-soft, #f3f0fc); }
 .scout-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
 .badge-soft { background: var(--lav-deep, #6d5bb0); }
 .week-done { font-size: 12px; font-weight: 700; color: #2f7d4f; line-height: 1; }
@@ -875,7 +908,7 @@ body.sheet-open { overflow: hidden; }
 
 /* weekly review, greeting (change 020) */
 .captain-greeting { margin: 4px 0 0; font-family: var(--sh-heading-font, Georgia, serif); font-size: 16px; color: var(--sh-ink); }
-.need-proposal { background: rgba(176, 224, 230, 0.35); }
+.need-proposal { background: var(--sh-soft, #f3f0fc); }
 .need-fact { background: var(--sh-soft, #f3f0fc); }
 .topic-history { margin-top: -4px; }
 
