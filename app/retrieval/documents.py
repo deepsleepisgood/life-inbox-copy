@@ -51,6 +51,7 @@ def load_passages(
         processing_status=processing_status,
         limit=None,
         offset=0,
+        include_completed=True,
     )
     passages: list[TextPassage] = []
     for item in items:

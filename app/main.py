@@ -1153,6 +1153,7 @@ def get_items(
     bot: Optional[str] = Query(None, max_length=20),
     order: Literal["asc", "desc"] = Query("asc"),
     topic_id: Optional[int] = Query(None, ge=1),
+    include_completed: bool = Query(False),
 ):
     bot = _life_area(bot)
     if topic_id is not None and not owns_topic(topic_id):
@@ -1169,6 +1170,7 @@ def get_items(
             bot=bot,
             newest_first=order == "desc",
             topic_id=topic_id,
+            include_completed=include_completed,
         )
     except Exception as exc:
         logger.exception("Failed to load inbox items")
@@ -1188,7 +1190,7 @@ def _markdown_code_block(value: str) -> str:
 @app.get("/api/items/export.md", response_class=Response)
 def export_items_markdown():
     try:
-        items = list_items_from_db(limit=None, offset=0)
+        items = list_items_from_db(limit=None, offset=0, include_completed=True)
     except Exception as exc:
         logger.exception("Failed to export inbox items")
         raise HTTPException(

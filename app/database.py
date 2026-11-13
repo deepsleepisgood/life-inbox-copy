@@ -1350,6 +1350,28 @@ def add_item_to_db(raw_text: str) -> dict:
         return _item_to_dict(item)
 
 
+def _done_item_ids(owner_id: int):
+    """Subquery for item_ids that have been completed (have a completed task
+    and no open tasks). A subquery, for `.in_()` or `.not_in()`."""
+    open_subquery = (
+        select(TaskSourceItemRecord.item_id)
+        .join(TaskRecord, TaskSourceItemRecord.task_id == TaskRecord.id)
+        .where(
+            TaskRecord.status == TASK_OPEN,
+            TaskRecord.owner_user_id == owner_id,
+        )
+    )
+    return (
+        select(TaskSourceItemRecord.item_id)
+        .join(TaskRecord, TaskSourceItemRecord.task_id == TaskRecord.id)
+        .where(
+            TaskRecord.status == TASK_COMPLETED,
+            TaskRecord.owner_user_id == owner_id,
+            TaskSourceItemRecord.item_id.not_in(open_subquery),
+        )
+    )
+
+
 def list_items_from_db(
     search: Optional[str] = None,
     item_type: Optional[str] = None,
@@ -1361,19 +1383,24 @@ def list_items_from_db(
     bot: Optional[str] = None,
     newest_first: bool = False,
     topic_id: Optional[int] = None,
+    include_completed: bool = False,
 ) -> list[dict]:
     owner_id = require_owner_id()
     with SessionLocal() as session:
         statement = select(InboxItemRecord).where(
             InboxItemRecord.owner_user_id == owner_id
         )
+        if not include_completed:
+            statement = statement.where(
+                InboxItemRecord.id.not_in(_done_item_ids(owner_id))
+            )
         if bot is not None:
             statement = statement.where(
                 InboxItemRecord.id.in_(_bot_item_ids(owner_id, bot))
             )
         if topic_id is not None:
             statement = statement.where(
-                InboxItemRecord.id.in_(_topic_item_ids(owner_id, topic_id))
+                InboxItemRecord.id.in_(_topic_item_ids(owner_id, topic_id, include_completed=include_completed))
             )
 
         if category or priority:
@@ -1641,7 +1668,7 @@ def list_notes_from_db(exclude_completed: bool = False) -> list[dict]:
                 ).all()
             )
     notes = []
-    for item in list_items_from_db(limit=None, offset=0):
+    for item in list_items_from_db(limit=None, offset=0, include_completed=True):
         if exclude_completed and item["id"] in completed_ids:
             continue
         if item["item_type"] not in ANALYZABLE_TYPES:
@@ -3730,16 +3757,7 @@ def list_topics_from_db(
         counts = {}
         # Completed notes leave the active views, so they don't count here
         # (your teammates' rule, with its test in test_isolation_regressions).
-        done_item_ids = set(
-            session.scalars(
-                select(TaskSourceItemRecord.item_id)
-                .join(TaskRecord)
-                .where(
-                    TaskRecord.status == TASK_COMPLETED,
-                    TaskRecord.owner_user_id == owner_id,
-                )
-            ).all()
-        )
+        done_item_ids = set(session.scalars(_done_item_ids(owner_id)).all())
         for insight in session.scalars(
             select(ItemInsightRecord)
             .join(InboxItemRecord, ItemInsightRecord.item_id == InboxItemRecord.id)
@@ -4183,14 +4201,14 @@ def _bot_item_ids(owner_id: int, bot_key: str):
     )
 
 
-def _topic_item_ids(owner_id: int, topic_id: int):
+def _topic_item_ids(owner_id: int, topic_id: int, include_completed: bool = False):
     """Ids of the owner's items filed in the topic or one of its subtopics
     (the user's pick, else the AI's). A subquery, for `.in_()`."""
     topic_ids = select(TopicRecord.id).where(
         TopicRecord.owner_user_id == owner_id,
         or_(TopicRecord.id == topic_id, TopicRecord.parent_topic_id == topic_id),
     )
-    return (
+    statement = (
         select(ItemInsightRecord.item_id)
         .join(InboxItemRecord, ItemInsightRecord.item_id == InboxItemRecord.id)
         .where(
@@ -4200,6 +4218,9 @@ def _topic_item_ids(owner_id: int, topic_id: int):
             ).in_(topic_ids),
         )
     )
+    if not include_completed:
+        statement = statement.where(ItemInsightRecord.item_id.not_in(_done_item_ids(owner_id)))
+    return statement
 
 
 def owns_topic(topic_id: int) -> bool:

@@ -196,3 +196,40 @@ def test_rename_only_touches_your_own_notes(client):
     assert ids(client, category="Study") == [theirs["id"]]
     latest = client.get("/api/analyze/latest").json()
     assert "Study" in [bucket["name"] for bucket in latest["buckets"]]
+
+
+def test_completed_note_leaves_topic_page_and_type_counts(client, study_with_python):
+    s = study_with_python
+    study_id = s["study"]["id"]
+    # Study initially has quiz and lecture
+    assert ids(client, topic_id=study_id, order="desc") == [s["quiz"]["id"], s["lecture"]["id"]]
+    detail = client.get(f"/api/topics/{study_id}").json()
+    assert detail["item_count"] == 1
+    assert detail["total_item_count"] == 2
+    assert detail["type_counts"] == {"text": 2}
+
+    # Mark the lecture note as done
+    assert client.post(f"/api/items/{s['lecture']['id']}/complete").status_code == 200
+
+    # The completed note must no longer persist on the topic page
+    assert ids(client, topic_id=study_id, order="desc") == [s["quiz"]["id"]]
+
+    # Detail counts and type_counts must also update
+    detail = client.get(f"/api/topics/{study_id}").json()
+    assert detail["item_count"] == 0
+    assert detail["total_item_count"] == 1
+    assert detail["type_counts"] == {"text": 1}
+
+    # Explicitly requesting include_completed=true still returns both
+    all_notes = client.get("/api/items", params={"topic_id": study_id, "include_completed": "true", "order": "desc"}).json()
+    assert [n["id"] for n in all_notes] == [s["quiz"]["id"], s["lecture"]["id"]]
+
+    # Reopening the task restores it to the topic page
+    task = client.get("/api/tasks?status=completed").json()[0]
+    client.post(f"/api/tasks/{task['id']}/reopen")
+    assert ids(client, topic_id=study_id, order="desc") == [s["quiz"]["id"], s["lecture"]["id"]]
+    detail_after = client.get(f"/api/topics/{study_id}").json()
+    assert detail_after["item_count"] == 1
+    assert detail_after["total_item_count"] == 2
+    assert detail_after["type_counts"] == {"text": 2}
+
